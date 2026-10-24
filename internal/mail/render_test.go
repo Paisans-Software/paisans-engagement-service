@@ -80,6 +80,26 @@ func TestRenderEscapes(t *testing.T) {
 	}
 }
 
+// Every field that comes from Mbin is escaped, in the list as in the featured
+// thread, and a URL that is not a web address never becomes a link.
+func TestRenderEscapesListAndURLs(t *testing.T) {
+	d := sample()
+	d.Featured.Item.Magazine.Name = "<b>mag</b>"
+	d.More[0].Title = "<b>listed</b>"
+	d.More[1].URL = "javascript:alert(1)"
+	m := render(t, d)
+	for _, bad := range []string{"<b>", "javascript:"} {
+		if strings.Contains(m.HTML, bad) {
+			t.Fatalf("%q in:\n%s", bad, m.HTML)
+		}
+	}
+	for _, want := range []string{"!&lt;b&gt;mag&lt;/b&gt;", "&lt;b&gt;listed&lt;/b&gt;", `href="#ZgotmplZ"`} {
+		if !strings.Contains(m.HTML, want) {
+			t.Fatalf("missing %q in:\n%s", want, m.HTML)
+		}
+	}
+}
+
 func TestRenderNoFeatured(t *testing.T) {
 	d := sample()
 	d.Featured = nil

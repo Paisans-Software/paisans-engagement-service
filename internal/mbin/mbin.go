@@ -84,7 +84,10 @@ func (s *Source) Hot(ctx context.Context, from, to time.Time) ([]digest.Item, er
 		}
 		if it.Key.Kind == digest.KindPost {
 			it.Title = digest.Plain(it.Title, titleRunes)
+		} else {
+			it.Title = oneLine(it.Title)
 		}
+		it.Magazine.Title = oneLine(it.Magazine.Title)
 		it.URL = s.url(it, slug)
 		if comments != nil {
 			var top []struct {
@@ -107,6 +110,10 @@ func (s *Source) Hot(ctx context.Context, from, to time.Time) ([]digest.Item, er
 	return items, nil
 }
 
+// oneLine collapses every run of whitespace, newlines included, to a single
+// space, since a title with a line break would break the email's text part.
+func oneLine(s string) string { return strings.Join(strings.Fields(s), " ") }
+
 // url is the item's page on Mbin: /m/<magazine>/t/<id>/<slug> for an entry,
 // /p/ for a post, with "-" standing in for a missing slug as Mbin does. A
 // remote magazine's name already carries its @host.
@@ -123,8 +130,9 @@ func (s *Source) url(it digest.Item, slug *string) string {
 }
 
 // View is the member's choices and, among items, what they already joined.
-// Visited counts a visit any time since from; Mbin records nothing that would
-// place one before to.
+// Visited is true when the member's last visit is at or after from. Mbin keeps
+// only the latest visit, so one after to also counts: nothing tells whether
+// there was another inside the window.
 func (s *Source) View(ctx context.Context, m digest.Member, from, to time.Time, items []digest.Item) (digest.View, error) {
 	v := digest.View{
 		Subscribed:       map[int64]bool{},

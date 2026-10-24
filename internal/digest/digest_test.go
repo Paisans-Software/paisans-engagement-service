@@ -204,6 +204,20 @@ func TestExcerptOmittedWhenNone(t *testing.T) {
 	}
 }
 
+// A top comment that is nothing once its markdown is gone, an image alone
+// say, gives way to the next one.
+func TestExcerptSkipsEmptyComment(t *testing.T) {
+	it := entry(1, 1, 1, 1, 1)
+	it.TopComments = []Comment{
+		{AuthorID: 50, Body: "![](https://example.org/i.png)", Votes: 9},
+		{AuthorID: 51, Body: "worth reading", Votes: 3},
+	}
+	d, _ := Build([]Item{it}, View{}, Stats{})
+	if d.Featured.Excerpt != "worth reading" {
+		t.Fatalf("excerpt %q", d.Featured.Excerpt)
+	}
+}
+
 func TestEmptyWhenEverythingDropped(t *testing.T) {
 	if _, ok := Build(nil, View{}, Stats{}); ok {
 		t.Fatal("empty input sent")
@@ -232,6 +246,14 @@ func TestPlain(t *testing.T) {
 		{"image", "![alt text](https://example.org/i.png) after"},
 		{"heading quote", "# Title\n> quoted"},
 		{"code", "use `go test` here"},
+		{"nested parens in a link", "read [Go (lang)](https://example.org/wiki/Go_(language)) first"},
+		{"nested parens in an image", "![a (b) c](https://example.org/i_(1).png) after"},
+		{"lone asterisks", "5 * 3 = 15 and 2 ** 8"},
+		{"spaced pair", "a * b * c"},
+		{"intraword underscores", "snake_case_name and __init__ stay"},
+		{"underscore emphasis", "this is _it_ and __so__"},
+		{"lone backtick and tilde", "a ` b and ~~ c"},
+		{"nested emphasis", "**bold *and em***"},
 	}
 	want := []string{
 		"see the docs now",
@@ -241,6 +263,14 @@ func TestPlain(t *testing.T) {
 		"alt text after",
 		"Title quoted",
 		"use go test here",
+		"read Go (lang) first",
+		"a (b) c after",
+		"5 * 3 = 15 and 2 ** 8",
+		"a * b * c",
+		"snake_case_name and init stay",
+		"this is it and so",
+		"a ` b and ~~ c",
+		"bold and em",
 	}
 	for i, c := range cases {
 		if got := Plain(c.in, 200); got != want[i] {

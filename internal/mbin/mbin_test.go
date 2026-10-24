@@ -403,6 +403,60 @@ func TestHotFederatedWithSubscriber(t *testing.T) {
 	}
 }
 
+// Only a member's subscription admits federated content: a local account
+// that is not one, here unverified, follows the magazine in vain.
+func TestHotFederatedWithIneligibleSubscriber(t *testing.T) {
+	f := newFixture(t)
+	f.user(t, 1, row{"is_verified": false})
+	f.user(t, 4, row{"ap_id": "https://remote.example.org/u/4"})
+	f.magazine(t, 15, row{"name": "far@remote.example.org", "ap_id": "https://remote.example.org/m/far"})
+	f.exec(t, `INSERT INTO magazine_subscription VALUES (1, 15)`)
+	f.entry(t, 9, 4, 15, row{"ap_id": "https://remote.example.org/t/9", "score": 5})
+
+	got, err := f.source(t).Hot(context.Background(), from, to)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 0 {
+		t.Fatalf("got %v", keys(got))
+	}
+}
+
+// An entry and a post with the same id and figures come entry first, so the
+// order never depends on the plan.
+func TestHotTieEntryBeforePost(t *testing.T) {
+	f := newFixture(t)
+	f.user(t, 1, nil)
+	f.magazine(t, 10, nil)
+	f.post(t, 5, 1, 10, row{"score": 3, "comment_count": 1})
+	f.entry(t, 5, 1, 10, row{"score": 3, "comment_count": 1})
+
+	got, err := f.source(t).Hot(context.Background(), from, to)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ks, want := keys(got), []digest.Key{entryKey(5), postKey(5)}; !slices.Equal(ks, want) {
+		t.Fatalf("got %v, want %v", ks, want)
+	}
+}
+
+// A title, the item's or its magazine's, is one line of text: a newline in
+// it would break the plain text part of the email.
+func TestHotTitleIsOneLine(t *testing.T) {
+	f := newFixture(t)
+	f.user(t, 1, nil)
+	f.magazine(t, 10, row{"title": "Two\nLine Magazine"})
+	f.entry(t, 1, 1, 10, row{"title": "  two\r\nlines\tand  gaps "})
+
+	got, err := f.source(t).Hot(context.Background(), from, to)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 || got[0].Title != "two lines and gaps" || got[0].Magazine.Title != "Two Line Magazine" {
+		t.Fatalf("got %+v", got)
+	}
+}
+
 func TestHotURLs(t *testing.T) {
 	f := newFixture(t)
 	f.user(t, 1, nil)

@@ -58,7 +58,8 @@ type View struct {
 	Subscribed, BlockedMagazines, BannedMagazines map[int64]bool
 	BlockedUsers                                  map[int64]bool
 	Joined                                        map[Key]bool
-	// Visited is true when the member's last_active falls inside the window.
+	// Visited is true when the member was on the site any time since from,
+	// the window's start; see mbin.Source.View.
 	Visited bool
 }
 
@@ -173,27 +174,49 @@ func excerpt(it Item, v View) string {
 		if v.BlockedUsers[c.AuthorID] {
 			continue
 		}
-		return Plain(c.Body, excerptRunes)
+		if e := Plain(c.Body, excerptRunes); e != "" {
+			return e
+		}
 	}
 	return ""
 }
 
+// A link's target may hold one level of parentheses, as Wikipedia's do.
+const target = `\((?:[^()]|\([^()]*\))*\)`
+
 var (
-	reImage = regexp.MustCompile(`!\[([^\]]*)\]\([^)]*\)`)
-	reLink  = regexp.MustCompile(`\[([^\]]*)\]\([^)]*\)`)
-	reMarks = regexp.MustCompile("(\\*\\*|__|~~|[*`])")
+	reImage = regexp.MustCompile(`!\[([^\]]*)\]` + target)
+	reLink  = regexp.MustCompile(`\[([^\]]*)\]` + target)
 	reLead  = regexp.MustCompile(`(?m)^\s*(#{1,6}\s+|>+\s?)`)
+	// Emphasis is a pair of marks whose inside neither starts nor ends with
+	// a space, so a lone "5 * 3" is left as written. Underscores also need a
+	// non word character outside them, so snake_case stays whole.
+	reMarks = []*regexp.Regexp{
+		regexp.MustCompile("`([^`\n]+)`"),
+		regexp.MustCompile(`\*\*(\S(?:.*?\S)?)\*\*`),
+		regexp.MustCompile(`~~(\S(?:.*?\S)?)~~`),
+		regexp.MustCompile(`\*(\S(?:.*?\S)?)\*`),
+	}
+	reUnderscores = []*regexp.Regexp{
+		regexp.MustCompile(`(^|[^\pL\pN_])__(\S(?:.*?\S)?)__($|[^\pL\pN_])`),
+		regexp.MustCompile(`(^|[^\pL\pN_])_(\S(?:.*?\S)?)_($|[^\pL\pN_])`),
+	}
 )
 
 // Plain reduces markdown to one line of plain text of at most max runes. It
-// keeps link text, drops emphasis marks, collapses whitespace and, when it
+// keeps link text, drops paired emphasis marks, collapses whitespace and, when it
 // must cut, cuts at a word boundary and ends with an ellipsis that counts
 // toward max.
 func Plain(body string, max int) string {
 	s := reLead.ReplaceAllString(body, "")
 	s = reImage.ReplaceAllString(s, "$1")
 	s = reLink.ReplaceAllString(s, "$1")
-	s = reMarks.ReplaceAllString(s, "")
+	for _, re := range reMarks {
+		s = re.ReplaceAllString(s, "$1")
+	}
+	for _, re := range reUnderscores {
+		s = re.ReplaceAllString(s, "$1$2$3")
+	}
 	s = strings.Join(strings.FieldsFunc(s, unicode.IsSpace), " ")
 
 	r := []rune(s)
