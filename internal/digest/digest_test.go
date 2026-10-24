@@ -254,6 +254,8 @@ func TestPlain(t *testing.T) {
 		{"underscore emphasis", "this is _it_ and __so__"},
 		{"lone backtick and tilde", "a ` b and ~~ c"},
 		{"nested emphasis", "**bold *and em***"},
+		{"adjacent underscore pairs", "_a_ _b_ and __c__ __d__"},
+		{"adjacent asterisk pairs", "*a* *b* and **c** **d** and ~~e~~ ~~f~~"},
 	}
 	want := []string{
 		"see the docs now",
@@ -271,6 +273,8 @@ func TestPlain(t *testing.T) {
 		"this is it and so",
 		"a ` b and ~~ c",
 		"bold and em",
+		"a b and c d",
+		"a b and c d and e f",
 	}
 	for i, c := range cases {
 		if got := Plain(c.in, 200); got != want[i] {

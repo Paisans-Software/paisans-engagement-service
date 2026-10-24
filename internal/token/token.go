@@ -25,8 +25,8 @@ func Sign(key []byte, subject string) string {
 		base64.RawURLEncoding.EncodeToString(mac(key, subject))
 }
 
-// strict rejects base64 whose spare low bits are set, so each token has
-// exactly one spelling.
+// strict rejects base64 whose spare low bits are set. It still skips CR and
+// LF, which Verify refuses first, so each token has exactly one spelling.
 var strict = base64.RawURLEncoding.Strict()
 
 // Verify returns the subject tok was signed for, and false for anything that
@@ -35,7 +35,7 @@ var strict = base64.RawURLEncoding.Strict()
 // signature.
 func Verify(key []byte, tok string) (subject string, ok bool) {
 	payload, sig, found := strings.Cut(tok, ".")
-	if !found {
+	if !found || strings.ContainsAny(tok, "\r\n") {
 		return "", false
 	}
 	b, err1 := strict.DecodeString(payload)

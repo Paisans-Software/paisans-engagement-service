@@ -77,3 +77,14 @@ func TestNonCanonicalEncodingFails(t *testing.T) {
 }
 
 const b64 = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_"
+
+// The base64 decoder skips CR and LF even in strict mode, so a token with
+// one inside would be a second spelling of the same link.
+func TestLineBreakFails(t *testing.T) {
+	good := Sign(key, "ab")
+	for _, tok := range []string{"YW\nI" + good[3:], "YW\rI" + good[3:], good[:len(good)-1] + "\n" + good[len(good)-1:]} {
+		if _, ok := Verify(key, tok); ok {
+			t.Errorf("Verify(%q) succeeded", tok)
+		}
+	}
+}

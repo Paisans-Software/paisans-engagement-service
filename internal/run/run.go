@@ -120,8 +120,9 @@ func (r *Runner) Week(ctx context.Context, week time.Time) error {
 }
 
 // one handles a claimed member and says how their send ended. An empty status
-// means nothing was handed to the relay, so the claim is to be released. The error explains a failure; it carries no address, since the
-// sender's errors are already reduced to a reason and a code.
+// means nothing was handed to the relay, so the claim is to be released. The
+// error explains a failure; it carries no address, since the sender's errors
+// are already reduced to a reason and a code.
 func (r *Runner) one(ctx context.Context, m digest.Member, from, to time.Time, items []digest.Item, stats digest.Stats) (store.Status, error) {
 	unsub, err := r.Store.Unsubscribed(ctx, m.Subject)
 	if err != nil {
@@ -157,7 +158,8 @@ const maxBackoff = 15 * time.Minute
 
 // Loop checks every tick whether a week is due and runs it until it succeeds
 // once. After a failed run the wait doubles, up to maxBackoff, so an outage
-// that lasts all day does not re-read Mbin every tick. The weeks that
+// that lasts all day does not re-read Mbin every tick; it is back to one tick
+// once no week is due. The weeks that
 // succeeded are remembered only in memory: after a restart, the claims in the
 // store keep a rerun from mailing anyone twice.
 func Loop(ctx context.Context, r *Runner, now func() time.Time, tick time.Duration) {
@@ -179,6 +181,10 @@ func Loop(ctx context.Context, r *Runner, now func() time.Time, tick time.Durati
 					backoff = tick
 				}
 			}
+		} else {
+			// The day is over, so the next one starts from a short wait
+			// whether this one ended in success or not.
+			backoff = tick
 		}
 		t.Reset(wait)
 		select {

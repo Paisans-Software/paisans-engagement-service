@@ -76,9 +76,9 @@ func serve() error {
 	}
 
 	// loopDone, once the digest loop is started, closes when it has
-	// returned. It is waited on before the deferred Close calls, so a member
-	// being sent at shutdown gets their claim finished or released rather
-	// than left pending. stop comes first, so a return for any other reason
+	// returned and closed the Mbin pool. It is waited on before the store's
+	// deferred Close, so a member being sent at shutdown gets their claim
+	// finished or released rather than left pending. stop comes first, so a return for any other reason
 	// also ends the loop.
 	var loopDone chan struct{}
 	defer func() {
@@ -102,9 +102,9 @@ func serve() error {
 		if err != nil {
 			return err
 		}
-		defer src.Close()
 		sender, err := mail.NewSMTP(cfg.SMTP)
 		if err != nil {
+			src.Close()
 			return err
 		}
 		runner := &run.Runner{
@@ -113,8 +113,11 @@ func serve() error {
 			SiteURL: cfg.MbinURL, PublicURL: cfg.PublicURL, Key: cfg.SigningKey,
 		}
 		loopDone = make(chan struct{})
+		// The loop owns the Mbin pool and closes it once it has returned, so
+		// a Week still running at shutdown never reads from a closed pool.
 		go func() {
 			defer close(loopDone)
+			defer src.Close()
 			run.Loop(ctx, runner, time.Now, time.Minute)
 		}()
 	}

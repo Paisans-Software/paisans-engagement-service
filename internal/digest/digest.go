@@ -189,24 +189,25 @@ var (
 	reLink  = regexp.MustCompile(`\[([^\]]*)\]` + target)
 	reLead  = regexp.MustCompile(`(?m)^\s*(#{1,6}\s+|>+\s?)`)
 	// Emphasis is a pair of marks whose inside neither starts nor ends with
-	// a space, so a lone "5 * 3" is left as written. Underscores also need a
+	// a space, so a lone "5 * 3" is left as written. The inside is matched
+	// lazily, so "*a* *b*" is two pairs rather than one around "a* *b". Underscores also need a
 	// non word character outside them, so snake_case stays whole.
 	reMarks = []*regexp.Regexp{
 		regexp.MustCompile("`([^`\n]+)`"),
-		regexp.MustCompile(`\*\*(\S(?:.*?\S)?)\*\*`),
-		regexp.MustCompile(`~~(\S(?:.*?\S)?)~~`),
-		regexp.MustCompile(`\*(\S(?:.*?\S)?)\*`),
+		regexp.MustCompile(`\*\*(\S(?:.*?\S)??)\*\*`),
+		regexp.MustCompile(`~~(\S(?:.*?\S)??)~~`),
+		regexp.MustCompile(`\*(\S(?:.*?\S)??)\*`),
 	}
 	reUnderscores = []*regexp.Regexp{
-		regexp.MustCompile(`(^|[^\pL\pN_])__(\S(?:.*?\S)?)__($|[^\pL\pN_])`),
-		regexp.MustCompile(`(^|[^\pL\pN_])_(\S(?:.*?\S)?)_($|[^\pL\pN_])`),
+		regexp.MustCompile(`(^|[^\pL\pN_])__(\S(?:.*?\S)??)__($|[^\pL\pN_])`),
+		regexp.MustCompile(`(^|[^\pL\pN_])_(\S(?:.*?\S)??)_($|[^\pL\pN_])`),
 	}
 )
 
 // Plain reduces markdown to one line of plain text of at most max runes. It
-// keeps link text, drops paired emphasis marks, collapses whitespace and, when it
-// must cut, cuts at a word boundary and ends with an ellipsis that counts
-// toward max.
+// keeps link text, drops paired emphasis marks, collapses whitespace and,
+// when it must cut, cuts at a word boundary and ends with an ellipsis that
+// counts toward max.
 func Plain(body string, max int) string {
 	s := reLead.ReplaceAllString(body, "")
 	s = reImage.ReplaceAllString(s, "$1")
@@ -214,8 +215,12 @@ func Plain(body string, max int) string {
 	for _, re := range reMarks {
 		s = re.ReplaceAllString(s, "$1")
 	}
+	// Each underscore match consumes the character on either side, so the
+	// pair right after it is only found on another pass.
 	for _, re := range reUnderscores {
-		s = re.ReplaceAllString(s, "$1$2$3")
+		for prev := ""; prev != s; {
+			prev, s = s, re.ReplaceAllString(s, "$1$2$3")
+		}
 	}
 	s = strings.Join(strings.FieldsFunc(s, unicode.IsSpace), " ")
 

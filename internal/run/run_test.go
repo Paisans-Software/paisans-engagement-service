@@ -293,11 +293,18 @@ func TestUnsubscribeLinkVerifies(t *testing.T) {
 // clock is a fixed time that counts how often Loop reads it, which is once a
 // tick, so a test can wait for ticks to pass rather than for time to.
 type clock struct {
-	at    time.Time
+	at    atomic.Pointer[time.Time]
 	reads atomic.Int32
 }
 
-func (c *clock) now() time.Time { c.reads.Add(1); return c.at }
+func newClock(at time.Time) *clock {
+	c := &clock{}
+	c.set(at)
+	return c
+}
+
+func (c *clock) set(at time.Time) { c.at.Store(&at) }
+func (c *clock) now() time.Time   { c.reads.Add(1); return *c.at.Load() }
 
 // waitTicks returns once Loop has read the clock n more times.
 func (c *clock) waitTicks(t *testing.T, n int32) {
@@ -319,7 +326,7 @@ func TestLoopRunsOncePerWeek(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
 	defer func() { cancel(); <-done }()
-	c := &clock{at: week.Add(30 * time.Minute)}
+	c := newClock(week.Add(30 * time.Minute))
 	go func() {
 		run.Loop(ctx, runner(s, src, rec), c.now, time.Millisecond)
 		close(done)
@@ -367,7 +374,7 @@ func TestLoopIdleOutsideTheDay(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
 	defer func() { cancel(); <-done }()
-	c := &clock{at: week.Add(-time.Hour)}
+	c := newClock(week.Add(-time.Hour))
 	go func() {
 		run.Loop(ctx, runner(s, src, &mailtest.Recorder{}), c.now, time.Millisecond)
 		close(done)
@@ -386,7 +393,7 @@ func TestLoopBacksOffAfterFailures(t *testing.T) {
 	src.hotErr = errors.New("mbin is down")
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
-	c := &clock{at: week.Add(time.Hour)}
+	c := newClock(week.Add(time.Hour))
 	go func() {
 		run.Loop(ctx, runner(s, src, &mailtest.Recorder{}), c.now, time.Millisecond)
 		close(done)
@@ -426,6 +433,35 @@ func TestViewErrorIsRetried(t *testing.T) {
 	}
 	if st := statuses(t, s)["sub-2"]; st != string(store.StatusSent) {
 		t.Fatalf("status %q", st)
+	}
+}
+
+// A day that failed throughout leaves no long wait behind: once the day is
+// over the backoff starts again from one tick, so the next Monday's retries
+// come quickly.
+func TestLoopBackoffResetsBetweenWeeks(t *testing.T) {
+	s := storetest.New(t)
+	src := newSource()
+	src.hotErr = errors.New("mbin is down")
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	defer func() { cancel(); <-done }()
+	c := newClock(week.Add(time.Hour))
+	go func() {
+		run.Loop(ctx, runner(s, src, &mailtest.Recorder{}), c.now, time.Millisecond)
+		close(done)
+	}()
+	// Long enough for the wait to have grown past 100ms.
+	time.Sleep(250 * time.Millisecond)
+	c.set(week.Add(25 * time.Hour)) // Tuesday
+	c.waitTicks(t, 3)
+	before := src.hots.Load()
+	c.set(week.AddDate(0, 0, 7).Add(time.Hour)) // the next Monday
+	// From a reset backoff the waits are 1, 2, 4, 8, 16ms; from the stale
+	// one the second attempt would be hundreds of milliseconds away.
+	time.Sleep(60 * time.Millisecond)
+	if n := src.hots.Load() - before; n < 3 {
+		t.Fatalf("%d attempts in the next Monday's first 60ms", n)
 	}
 }
 
