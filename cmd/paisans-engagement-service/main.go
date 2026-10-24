@@ -4,6 +4,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net"
@@ -14,6 +15,11 @@ import (
 	"time"
 
 	"github.com/paisans-software/paisans-engagement-service/internal/config"
+	"github.com/paisans-software/paisans-engagement-service/internal/mail"
+	"github.com/paisans-software/paisans-engagement-service/internal/mbin"
+	"github.com/paisans-software/paisans-engagement-service/internal/run"
+	"github.com/paisans-software/paisans-engagement-service/internal/store"
+	"github.com/paisans-software/paisans-engagement-service/internal/web"
 )
 
 func main() {
@@ -21,7 +27,7 @@ func main() {
 		os.Exit(healthcheck(os.Getenv("ENGAGEMENT_LISTEN_ADDR")))
 	}
 	slog.SetDefault(slog.New(slog.NewJSONHandler(os.Stdout, nil)))
-	if err := run(); err != nil {
+	if err := serve(); err != nil {
 		slog.Error("exiting", "error", err)
 		os.Exit(1)
 	}
@@ -49,7 +55,7 @@ func healthcheck(listenAddr string) int {
 	return 0
 }
 
-func run() error {
+func serve() error {
 	cfg, err := config.Load(os.Getenv)
 	if err != nil {
 		return err
@@ -57,7 +63,55 @@ func run() error {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
-	slog.Info("configured", "listen", cfg.ListenAddr, "mail", cfg.SMTP.Host != "")
-	<-ctx.Done()
+	st, err := store.Open(ctx, cfg.DatabaseURL)
+	if err != nil {
+		return err
+	}
+	defer st.Close()
+	if err := st.Ping(ctx); err != nil {
+		return fmt.Errorf("database unreachable: %w", err)
+	}
+	if err := st.Migrate(ctx); err != nil {
+		return err
+	}
+
+	// Unsubscribe links in mail already sent keep working without a mail
+	// host, so the route is served either way; only the sending is skipped.
+	if cfg.SMTP.Host == "" {
+		slog.Warn("no mail host is configured, so no digest is sent")
+	} else {
+		src, err := mbin.Open(ctx, cfg.MbinDatabaseURL, cfg.MbinURL)
+		if err != nil {
+			return err
+		}
+		defer src.Close()
+		sender, err := mail.NewSMTP(cfg.SMTP)
+		if err != nil {
+			return err
+		}
+		runner := &run.Runner{
+			Store: st, Source: src, Sender: sender,
+			Names:   mail.Names{Instance: cfg.InstanceTitle, Meta: cfg.MetaTitle},
+			SiteURL: cfg.MbinURL, PublicURL: cfg.PublicURL, Key: cfg.SigningKey,
+		}
+		go run.Loop(ctx, runner, time.Now, time.Minute)
+	}
+
+	srv := &http.Server{Addr: cfg.ListenAddr, Handler: web.NewServer(st, cfg.SigningKey), ReadHeaderTimeout: 10 * time.Second}
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		<-ctx.Done()
+		shut, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		if err := srv.Shutdown(shut); err != nil {
+			slog.Warn("shutdown", "error", err)
+		}
+	}()
+	slog.Info("listening", "addr", cfg.ListenAddr, "mail", cfg.SMTP.Host != "")
+	if err := srv.ListenAndServe(); !errors.Is(err, http.ErrServerClosed) {
+		return err
+	}
+	<-done
 	return nil
 }
