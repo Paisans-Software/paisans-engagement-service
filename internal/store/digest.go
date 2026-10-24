@@ -46,10 +46,11 @@ func (s *Store) Claim(ctx context.Context, subject string, week time.Time) (bool
 }
 
 // Finish records how a claimed send ended. It fails if the send was never
-// claimed, since writing a status for a row nobody holds would hide a bug.
+// claimed or has already finished, since writing a status for a row nobody
+// holds, or over one already recorded, would hide a bug.
 func (s *Store) Finish(ctx context.Context, subject string, week time.Time, status Status) error {
 	tag, err := s.pool.Exec(ctx,
-		`UPDATE sends SET status=$3, at=now() WHERE subject=$1 AND week=$2::date`,
+		`UPDATE sends SET status=$3, at=now() WHERE subject=$1 AND week=$2::date AND status='pending'`,
 		subject, weekDate(week), string(status))
 	if err != nil {
 		return err
