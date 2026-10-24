@@ -54,7 +54,11 @@ func Load(getenv func(string) string) (Config, error) {
 		return def
 	}
 	key := func(k string) []byte {
-		b, err := base64.RawURLEncoding.DecodeString(req(k))
+		v := req(k)
+		if v == "" {
+			return nil
+		}
+		b, err := base64.RawURLEncoding.DecodeString(v)
 		if err != nil || len(b) != 32 {
 			errs = append(errs, fmt.Errorf("%s must be 32 bytes as unpadded base64url", k))
 			return nil
@@ -90,6 +94,18 @@ func Load(getenv func(string) string) (Config, error) {
 		c.SMTP.From = req("ENGAGEMENT_SMTP_FROM")
 	} else {
 		c.SMTP.From = getenv("ENGAGEMENT_SMTP_FROM")
+	}
+	// These reach mail headers and links, where a line break would let the
+	// value start a header of its own.
+	for _, v := range []struct{ name, value string }{
+		{"ENGAGEMENT_META_TITLE", c.MetaTitle},
+		{"ENGAGEMENT_INSTANCE_TITLE", c.InstanceTitle},
+		{"ENGAGEMENT_PUBLIC_URL", c.PublicURL},
+		{"ENGAGEMENT_MBIN_URL", c.MbinURL},
+	} {
+		if strings.ContainsAny(v.value, "\r\n") {
+			errs = append(errs, fmt.Errorf("%s must be one line", v.name))
+		}
 	}
 	switch c.SMTP.TLS {
 	case "none", "starttls", "tls":

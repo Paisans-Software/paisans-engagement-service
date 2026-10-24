@@ -123,3 +123,28 @@ func TestLoadRejectsBadPort(t *testing.T) {
 		}
 	}
 }
+
+// A missing key is one problem, reported once.
+func TestLoadMissingKeyOneError(t *testing.T) {
+	_, err := Load(env(map[string]string{"ENGAGEMENT_SIGNING_KEY": ""}))
+	if err == nil {
+		t.Fatal("missing key accepted")
+	}
+	if n := strings.Count(err.Error(), "ENGAGEMENT_SIGNING_KEY"); n != 1 {
+		t.Fatalf("named %d times: %v", n, err)
+	}
+}
+
+// These values reach mail headers or links, where a line break would let
+// the value add a header of its own.
+func TestLoadRejectsLineBreaks(t *testing.T) {
+	for _, k := range []string{"ENGAGEMENT_META_TITLE", "ENGAGEMENT_INSTANCE_TITLE", "ENGAGEMENT_PUBLIC_URL", "ENGAGEMENT_MBIN_URL"} {
+		for _, br := range []string{"\r", "\n"} {
+			v := "https://x.example.org" + br + "Bcc: someone@example.org"
+			_, err := Load(env(map[string]string{k: v}))
+			if err == nil || !strings.Contains(err.Error(), k+" must be one line") {
+				t.Errorf("%s with %q: got %v", k, br, err)
+			}
+		}
+	}
+}
