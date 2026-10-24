@@ -298,3 +298,55 @@ func TestPlain(t *testing.T) {
 		t.Fatalf("got %q", got)
 	}
 }
+
+// A thread an earlier digest showed comes back only with new comments, and
+// then marked as back.
+func TestShownNeedsNewComments(t *testing.T) {
+	quiet, busy := entry(1, 1, 50, 50, 5), entry(2, 1, 1, 9, 3)
+	busy.NewComments = 4
+	v := View{Shown: map[Key]bool{{KindEntry, 1}: true, {KindEntry, 2}: true}}
+	d, ok := Build([]Item{quiet, busy}, v, Stats{})
+	if !ok || d.Featured == nil || d.Featured.Item.Key.ID != 2 || len(d.More) != 0 {
+		t.Fatalf("got %+v ok=%v", d, ok)
+	}
+	if !d.Featured.Item.Again {
+		t.Fatal("a returning thread is not marked as back")
+	}
+	if _, ok := Build([]Item{quiet}, v, Stats{}); ok {
+		t.Fatal("a digest of only quiet returning threads was sent")
+	}
+	if d, _ := Build([]Item{quiet}, View{}, Stats{}); d.Featured == nil || d.Featured.Item.Again {
+		t.Fatalf("a thread never shown: %+v", d)
+	}
+}
+
+// A returning thread is ranked by this week's comments and people, not by
+// its score or its comments before.
+func TestShownRanksByThisWeek(t *testing.T) {
+	old := entry(1, 1, 100, 100, 2)
+	old.NewComments = 1
+	fresh := entry(2, 1, 1, 3, 2)
+	d, _ := Build([]Item{old, fresh}, View{Shown: map[Key]bool{{KindEntry, 1}: true}}, Stats{})
+	// old scores 2*1+3*2 = 8 again; fresh scores 1+2*3+3*2 = 13.
+	if d.Featured.Item.Key.ID != 2 || !eq(keys(d.More), []int64{1}) {
+		t.Fatalf("got featured %d, more %v", d.Featured.Item.Key.ID, keys(d.More))
+	}
+}
+
+// A returning thread quotes the best of this week's comments, never an
+// older one.
+func TestShownExcerptIsThisWeek(t *testing.T) {
+	it := entry(1, 1, 1, 9, 1)
+	it.NewComments = 1
+	it.TopComments = []Comment{{AuthorID: 50, Body: "from before", Votes: 40}}
+	v := View{Shown: map[Key]bool{{KindEntry, 1}: true}}
+	d, _ := Build([]Item{it}, v, Stats{})
+	if d.Featured.Excerpt != "" {
+		t.Fatalf("quoted an older comment: %q", d.Featured.Excerpt)
+	}
+	it.TopNew = []Comment{{AuthorID: 51, Body: "this week", Votes: 2}}
+	d, _ = Build([]Item{it}, v, Stats{})
+	if d.Featured.Excerpt != "this week" {
+		t.Fatalf("excerpt %q", d.Featured.Excerpt)
+	}
+}

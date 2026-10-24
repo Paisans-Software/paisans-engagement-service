@@ -165,3 +165,19 @@ func TestRenderPostLabelled(t *testing.T) {
 		t.Fatalf("label count wrong:\n%s", m.Text)
 	}
 }
+
+// A thread shown before is counted by this week's comments, in the featured
+// slot and in the list.
+func TestRenderReturningFigure(t *testing.T) {
+	d := sample()
+	d.Featured.Item.Again, d.Featured.Item.NewComments = true, 2
+	d.More[0].Again, d.More[0].NewComments = true, 1
+	m := render(t, d)
+	for _, part := range []string{m.Text, m.HTML} {
+		for _, w := range []string{"2 new comments this week · 3 people joined in", "1 new comment this week", "4 comments"} {
+			if !strings.Contains(part, w) {
+				t.Fatalf("missing %q:\n%s", w, part)
+			}
+		}
+	}
+}

@@ -72,9 +72,11 @@ func (s *Source) Hot(ctx context.Context, from, to time.Time) ([]digest.Item, er
 			slug     *string
 			text     *string
 			comments []byte
+			newTop   []byte
 		)
 		err := r.Scan(&kind, &it.Key.ID, &it.AuthorID, &slug, &text, &it.Score, &it.Comments, &it.Federated,
-			&it.Magazine.ID, &it.Magazine.Name, &it.Magazine.Title, &it.Participants, &comments)
+			&it.Magazine.ID, &it.Magazine.Name, &it.Magazine.Title, &it.Participants, &it.NewComments,
+			&comments, &newTop)
 		if err != nil {
 			return it, err
 		}
@@ -89,18 +91,11 @@ func (s *Source) Hot(ctx context.Context, from, to time.Time) ([]digest.Item, er
 		}
 		it.Magazine.Title = oneLine(it.Magazine.Title)
 		it.URL = s.url(it, slug)
-		if comments != nil {
-			var top []struct {
-				Author int64  `json:"author"`
-				Body   string `json:"body"`
-				Votes  int    `json:"votes"`
-			}
-			if err := json.Unmarshal(comments, &top); err != nil {
-				return it, err
-			}
-			for _, c := range top {
-				it.TopComments = append(it.TopComments, digest.Comment{AuthorID: c.Author, Body: c.Body, Votes: c.Votes})
-			}
+		if it.TopComments, err = topComments(comments); err != nil {
+			return it, err
+		}
+		if it.TopNew, err = topComments(newTop); err != nil {
+			return it, err
 		}
 		return it, nil
 	})
@@ -108,6 +103,26 @@ func (s *Source) Hot(ctx context.Context, from, to time.Time) ([]digest.Item, er
 		return nil, fmt.Errorf("hot: %w", err)
 	}
 	return items, nil
+}
+
+// topComments decodes a JSON list of comments from hotSQL; nil is none.
+func topComments(b []byte) ([]digest.Comment, error) {
+	if b == nil {
+		return nil, nil
+	}
+	var top []struct {
+		Author int64  `json:"author"`
+		Body   string `json:"body"`
+		Votes  int    `json:"votes"`
+	}
+	if err := json.Unmarshal(b, &top); err != nil {
+		return nil, err
+	}
+	var out []digest.Comment
+	for _, c := range top {
+		out = append(out, digest.Comment{AuthorID: c.Author, Body: c.Body, Votes: c.Votes})
+	}
+	return out, nil
 }
 
 // oneLine collapses every run of whitespace, newlines included, to a single

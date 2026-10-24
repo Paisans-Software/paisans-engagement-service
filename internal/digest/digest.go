@@ -46,6 +46,13 @@ type Item struct {
 	Comments, Participants int
 	Score                  int
 	TopComments            []Comment // highest voted first, at most 3, empty for federated
+	// NewComments counts the comments posted this week, and TopNew is the
+	// best of them, chosen as TopComments is.
+	NewComments int
+	TopNew      []Comment
+	// Again is set by Build on an item an earlier digest showed the member,
+	// which is shown by this week's activity alone.
+	Again bool
 }
 
 type Member struct {
@@ -61,6 +68,8 @@ type View struct {
 	// Visited is true when the member was on the site any time since from,
 	// the window's start; see mbin.Source.View.
 	Visited bool
+	// Shown is what earlier digests showed the member.
+	Shown map[Key]bool
 }
 
 type Stats struct{ NewThreads, Comments, NewMembers int }
@@ -100,6 +109,14 @@ func Build(items []Item, v View, stats Stats) (Digest, bool) {
 		// follow themselves.
 		if it.Federated && !v.Subscribed[it.Magazine.ID] {
 			continue
+		}
+		// A thread the member already got comes back only for new
+		// comments, since nothing else in it can be shown as new.
+		if v.Shown[it.Key] {
+			if it.NewComments == 0 {
+				continue
+			}
+			it.Again = true
 		}
 		rs = append(rs, ranked{it, rank(it, v)})
 	}
@@ -151,7 +168,8 @@ func Build(items []Item, v View, stats Stats) (Digest, bool) {
 // rank weighs the engagement figures. A followed magazine counts for more,
 // less so if the member was on the site this week and has likely seen it;
 // federated items count for less because this server only sees the votes and
-// comments that reached it.
+// comments that reached it. A thread shown before is weighed by this week's
+// comments and people alone, so its history does not carry it.
 func rank(it Item, v View) float64 {
 	w := 1.0
 	if v.Subscribed[it.Magazine.ID] {
@@ -163,6 +181,9 @@ func rank(it Item, v View) float64 {
 	if it.Federated {
 		w *= 0.5
 	}
+	if it.Again {
+		return w * float64(2*it.NewComments+3*it.Participants)
+	}
 	return w * float64(it.Score+2*it.Comments+3*it.Participants)
 }
 
@@ -170,7 +191,11 @@ func excerpt(it Item, v View) string {
 	if it.Federated {
 		return ""
 	}
-	for _, c := range it.TopComments {
+	comments := it.TopComments
+	if it.Again {
+		comments = it.TopNew
+	}
+	for _, c := range comments {
 		if v.BlockedUsers[c.AuthorID] {
 			continue
 		}

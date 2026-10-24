@@ -49,7 +49,11 @@ func Render(d digest.Digest, n Names, siteURL, unsubscribeURL string, from, to t
 	}
 	if f := d.Featured; f != nil {
 		fv := featuredView{itemView: toView(f.Item), Excerpt: f.Excerpt}
-		fv.Figure = fmt.Sprintf("%s · %s", plural(f.Item.Comments, "comment", "comments"), plural(f.Item.Participants, "person joined in", "people joined in"))
+		comments := plural(f.Item.Comments, "comment", "comments")
+		if f.Item.Again {
+			comments = newComments(f.Item)
+		}
+		fv.Figure = fmt.Sprintf("%s · %s", comments, plural(f.Item.Participants, "person joined in", "people joined in"))
 		v.Featured = &fv
 	}
 	for _, it := range d.More {
@@ -72,18 +76,24 @@ func Render(d digest.Digest, n Names, siteURL, unsubscribeURL string, from, to t
 }
 
 // toView gives a list item its one figure: the comment count when there are
-// comments, else the score.
+// comments, else the score, and for a thread shown before, its new comments.
 func toView(it digest.Item) itemView {
 	iv := itemView{Title: it.Title, URL: it.URL, Magazine: "!" + it.Magazine.Name}
 	if it.Key.Kind == digest.KindPost {
 		iv.Label = "microblog"
 	}
-	if it.Comments > 0 {
+	if it.Again {
+		iv.Figure = newComments(it)
+	} else if it.Comments > 0 {
 		iv.Figure = plural(it.Comments, "comment", "comments")
 	} else {
 		iv.Figure = plural(it.Score, "vote", "votes")
 	}
 	return iv
+}
+
+func newComments(it digest.Item) string {
+	return plural(it.NewComments, "new comment", "new comments") + " this week"
 }
 
 func plural(n int, one, many string) string {

@@ -4,6 +4,8 @@ import (
 	"context"
 	"fmt"
 	"time"
+
+	"github.com/jackc/pgx/v5"
 )
 
 // Status is how one member's digest for one week ended.
@@ -16,11 +18,44 @@ const (
 	StatusUnsubscribed Status = "unsubscribed"
 )
 
-// Unsubscribe records that the member never wants the digest again. Calling it
-// twice changes nothing, so a repeated click on the link is harmless.
+// Item names a thread a digest showed: kind is its source's table, ID its id
+// there.
+type Item struct {
+	Kind string
+	ID   int64
+}
+
+// Unsubscribe records that the member never wants the digest again, and
+// forgets which threads they were shown. Calling it twice changes nothing, so
+// a repeated click on the link is harmless.
 func (s *Store) Unsubscribe(ctx context.Context, subject string) error {
-	_, err := s.pool.Exec(ctx, `INSERT INTO unsubscribes (subject) VALUES ($1) ON CONFLICT (subject) DO NOTHING`, subject)
-	return err
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx)
+	if _, err := tx.Exec(ctx, `INSERT INTO unsubscribes (subject) VALUES ($1) ON CONFLICT (subject) DO NOTHING`, subject); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(ctx, `DELETE FROM shown WHERE subject=$1`, subject); err != nil {
+		return err
+	}
+	return tx.Commit(ctx)
+}
+
+// Shown is every thread an earlier digest showed the member.
+func (s *Store) Shown(ctx context.Context, subject string) (map[Item]bool, error) {
+	rows, err := s.pool.Query(ctx, `SELECT DISTINCT kind, item_id FROM shown WHERE subject=$1`, subject)
+	if err != nil {
+		return nil, err
+	}
+	got := map[Item]bool{}
+	var it Item
+	_, err = pgx.ForEachRow(rows, []any{&it.Kind, &it.ID}, func() error {
+		got[it] = true
+		return nil
+	})
+	return got, err
 }
 
 func (s *Store) Unsubscribed(ctx context.Context, subject string) (bool, error) {
@@ -45,11 +80,17 @@ func (s *Store) Claim(ctx context.Context, subject string, week time.Time) (bool
 	return tag.RowsAffected() == 1, nil
 }
 
-// Finish records how a claimed send ended. It fails if the send was never
-// claimed or has already finished, since writing a status for a row nobody
-// holds, or over one already recorded, would hide a bug.
-func (s *Store) Finish(ctx context.Context, subject string, week time.Time, status Status) error {
-	tag, err := s.pool.Exec(ctx,
+// Finish records how a claimed send ended and, in the same transaction, the
+// threads it showed. It fails if the send was never claimed or has already
+// finished, since writing a status for a row nobody holds, or over one
+// already recorded, would hide a bug.
+func (s *Store) Finish(ctx context.Context, subject string, week time.Time, status Status, shown ...Item) error {
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx)
+	tag, err := tx.Exec(ctx,
 		`UPDATE sends SET status=$3, at=now() WHERE subject=$1 AND week=$2::date AND status='pending'`,
 		subject, weekDate(week), string(status))
 	if err != nil {
@@ -60,7 +101,20 @@ func (s *Store) Finish(ctx context.Context, subject string, week time.Time, stat
 		// error reaches the log.
 		return fmt.Errorf("no claimed send in the week of %s", weekDate(week))
 	}
-	return nil
+	if len(shown) > 0 {
+		kinds, ids := make([]string, len(shown)), make([]int64, len(shown))
+		for i, it := range shown {
+			kinds[i], ids[i] = it.Kind, it.ID
+		}
+		if _, err := tx.Exec(ctx,
+			`INSERT INTO shown (subject, week, kind, item_id)
+			SELECT $1, $2::date, k, i FROM unnest($3::text[], $4::bigint[]) AS t(k, i)
+			ON CONFLICT DO NOTHING`,
+			subject, weekDate(week), kinds, ids); err != nil {
+			return err
+		}
+	}
+	return tx.Commit(ctx)
 }
 
 // weekDate is the calendar date of t in t's own location, as YYYY-MM-DD.

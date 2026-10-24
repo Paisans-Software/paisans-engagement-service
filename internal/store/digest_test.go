@@ -197,3 +197,64 @@ func TestStoreErrorsNameNoSubject(t *testing.T) {
 		t.Fatalf("Finish error: %v", err)
 	}
 }
+
+// A sent digest records the threads it showed, for that member alone, and a
+// later week's record adds to it.
+func TestFinishRecordsShown(t *testing.T) {
+	s := storetest.New(t)
+	ctx := context.Background()
+	a, b := store.Item{Kind: "entry", ID: 1}, store.Item{Kind: "post", ID: 1}
+	for i, shown := range [][]store.Item{{a, b}, {a}} {
+		week := monday.AddDate(0, 0, 7*i)
+		if _, err := s.Claim(ctx, "sub-1", week); err != nil {
+			t.Fatal(err)
+		}
+		if err := s.Finish(ctx, "sub-1", week, store.StatusSent, shown...); err != nil {
+			t.Fatal(err)
+		}
+	}
+	got, err := s.Shown(ctx, "sub-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 2 || !got[a] || !got[b] {
+		t.Fatalf("got %v", got)
+	}
+	if got, err := s.Shown(ctx, "sub-2"); err != nil || len(got) != 0 {
+		t.Fatalf("another subject: %v, %v", got, err)
+	}
+}
+
+// A Finish that fails records nothing it was given.
+func TestFinishFailureRecordsNoShown(t *testing.T) {
+	s := storetest.New(t)
+	ctx := context.Background()
+	if err := s.Finish(ctx, "sub-1", monday, store.StatusSent, store.Item{Kind: "entry", ID: 1}); err == nil {
+		t.Fatal("finishing a send that was never claimed should fail")
+	}
+	if got, err := s.Shown(ctx, "sub-1"); err != nil || len(got) != 0 {
+		t.Fatalf("got %v, %v", got, err)
+	}
+}
+
+func TestUnsubscribeForgetsShown(t *testing.T) {
+	s := storetest.New(t)
+	ctx := context.Background()
+	for _, sub := range []string{"sub-1", "sub-2"} {
+		if _, err := s.Claim(ctx, sub, monday); err != nil {
+			t.Fatal(err)
+		}
+		if err := s.Finish(ctx, sub, monday, store.StatusSent, store.Item{Kind: "entry", ID: 1}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := s.Unsubscribe(ctx, "sub-1"); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := s.Shown(ctx, "sub-1"); err != nil || len(got) != 0 {
+		t.Fatalf("unsubscribed: %v, %v", got, err)
+	}
+	if got, err := s.Shown(ctx, "sub-2"); err != nil || len(got) != 1 {
+		t.Fatalf("another subject: %v, %v", got, err)
+	}
+}

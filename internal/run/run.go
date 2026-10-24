@@ -78,7 +78,7 @@ func (r *Runner) Week(ctx context.Context, week time.Time) error {
 			n.skipped++
 			continue
 		}
-		status, err := r.one(ctx, m, from, week, items, stats)
+		status, shown, err := r.one(ctx, m, from, week, items, stats)
 		// Released or finished even when ctx has ended, or the member would
 		// stay claimed and unsent for the week.
 		wctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
@@ -109,7 +109,7 @@ func (r *Runner) Week(ctx context.Context, week time.Time) error {
 			// The member id identifies the row in Mbin without naming them.
 			slog.Warn("digest not sent", "member", m.ID, "error", err)
 		}
-		if err := r.Store.Finish(wctx, m.Subject, week, status); err != nil && firstErr == nil {
+		if err := r.Store.Finish(wctx, m.Subject, week, status, shown...); err != nil && firstErr == nil {
 			firstErr = fmt.Errorf("record a send: %w", err)
 		}
 		cancel()
@@ -119,38 +119,61 @@ func (r *Runner) Week(ctx context.Context, week time.Time) error {
 	return firstErr
 }
 
-// one handles a claimed member and says how their send ended. An empty status
-// means nothing was handed to the relay, so the claim is to be released. The
-// error explains a failure; it carries no address, since the sender's errors
-// are already reduced to a reason and a code.
-func (r *Runner) one(ctx context.Context, m digest.Member, from, to time.Time, items []digest.Item, stats digest.Stats) (store.Status, error) {
+// one handles a claimed member and says how their send ended, and which
+// threads a sent digest showed. An empty status means nothing was handed to
+// the relay, so the claim is to be released. The error explains a failure; it
+// carries no address, since the sender's errors are already reduced to a
+// reason and a code.
+func (r *Runner) one(ctx context.Context, m digest.Member, from, to time.Time, items []digest.Item, stats digest.Stats) (store.Status, []store.Item, error) {
 	unsub, err := r.Store.Unsubscribed(ctx, m.Subject)
 	if err != nil {
-		return "", fmt.Errorf("read unsubscribes: %w", err)
+		return "", nil, fmt.Errorf("read unsubscribes: %w", err)
 	}
 	if unsub {
-		return store.StatusUnsubscribed, nil
+		return store.StatusUnsubscribed, nil, nil
 	}
 	v, err := r.Source.View(ctx, m, from, to, items)
 	if err != nil {
-		return "", fmt.Errorf("read the member's view: %w", err)
+		return "", nil, fmt.Errorf("read the member's view: %w", err)
+	}
+	shown, err := r.Store.Shown(ctx, m.Subject)
+	if err != nil {
+		return "", nil, fmt.Errorf("read what the member was shown: %w", err)
+	}
+	v.Shown = map[digest.Key]bool{}
+	for it := range shown {
+		v.Shown[digest.Key{Kind: digest.Kind(it.Kind), ID: it.ID}] = true
 	}
 	d, ok := digest.Build(items, v, stats)
 	if !ok {
-		return store.StatusEmpty, nil
+		return store.StatusEmpty, nil, nil
 	}
 	msg, err := mail.Render(d, r.Names, r.SiteURL, r.PublicURL+"/u/"+token.Sign(r.Key, m.Subject), from, to)
 	if err != nil {
-		return "", fmt.Errorf("render: %w", err)
+		return "", nil, fmt.Errorf("render: %w", err)
 	}
 	msg.To = m.Email
 	if err := r.Sender.Send(ctx, msg); err != nil {
 		if errors.Is(err, mail.ErrNotSent) {
-			return "", err
+			return "", nil, err
 		}
-		return store.StatusFailed, err
+		// The message may have gone out, but a thread is only remembered
+		// as shown once it surely was.
+		return store.StatusFailed, nil, err
 	}
-	return store.StatusSent, nil
+	return store.StatusSent, sent(d), nil
+}
+
+// sent is every thread the digest shows.
+func sent(d digest.Digest) []store.Item {
+	var out []store.Item
+	if d.Featured != nil {
+		out = append(out, store.Item{Kind: string(d.Featured.Item.Key.Kind), ID: d.Featured.Item.Key.ID})
+	}
+	for _, it := range d.More {
+		out = append(out, store.Item{Kind: string(it.Key.Kind), ID: it.Key.ID})
+	}
+	return out
 }
 
 // maxBackoff is the longest Loop waits between attempts at a failing week.

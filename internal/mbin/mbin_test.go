@@ -513,10 +513,10 @@ func TestHotParticipantsAndFigures(t *testing.T) {
 	if len(got) != 2 {
 		t.Fatalf("got %+v", got)
 	}
-	if e := got[0]; e.Key != entryKey(1) || e.Participants != 2 || e.Comments != 6 || e.Score != 4 {
+	if e := got[0]; e.Key != entryKey(1) || e.Participants != 2 || e.Comments != 6 || e.Score != 4 || e.NewComments != 3 {
 		t.Errorf("entry: %+v", e)
 	}
-	if p := got[1]; p.Key != postKey(1) || p.Participants != 2 {
+	if p := got[1]; p.Key != postKey(1) || p.Participants != 2 || p.NewComments != 1 {
 		t.Errorf("post: %+v", p)
 	}
 }
@@ -721,4 +721,42 @@ func mapsEqual(a, b map[int64]bool) bool {
 		}
 	}
 	return true
+}
+
+// The week's top comments leave out older ones however well liked, and a
+// federated item has none.
+func TestTopNewThisWeekOnly(t *testing.T) {
+	f := newFixture(t)
+	f.user(t, 1, nil)
+	f.user(t, 2, nil)
+	f.magazine(t, 10, nil)
+	f.magazine(t, 11, row{"name": "remote@remote.example.org", "ap_id": "https://remote.example.org/m/remote"})
+	f.exec(t, `INSERT INTO magazine_subscription VALUES (1, 11)`)
+	f.entry(t, 1, 1, 10, nil)
+	f.entryComment(t, 1, 2, 1, 10, row{"up_votes": 90, "body": "before", "created_at": old})
+	f.entryComment(t, 2, 2, 1, 10, row{"up_votes": 2, "body": "this week"})
+	f.entryComment(t, 3, 2, 1, 10, row{"up_votes": 9, "body": "after", "created_at": to})
+	f.entry(t, 2, 2, 11, row{"ap_id": "https://remote.example.org/t/2"})
+	f.entryComment(t, 4, 2, 2, 11, row{"up_votes": 5, "body": "remote thread"})
+
+	got, err := f.source(t).Hot(context.Background(), from, to)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("got %+v", got)
+	}
+	local, remote := got[0], got[1]
+	if local.Key != entryKey(1) {
+		local, remote = remote, local
+	}
+	if want := []digest.Comment{{AuthorID: 2, Body: "this week", Votes: 2}}; !slices.Equal(local.TopNew, want) {
+		t.Errorf("local: got %+v, want %+v", local.TopNew, want)
+	}
+	if len(local.TopComments) != 3 || local.NewComments != 1 {
+		t.Errorf("local: %+v", local)
+	}
+	if remote.TopNew != nil || remote.NewComments != 1 {
+		t.Errorf("remote: %+v", remote)
+	}
 }

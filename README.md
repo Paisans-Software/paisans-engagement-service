@@ -4,6 +4,7 @@ paisans-engagement-service sends the community's weekly digest email, a small Go
 
 * **Who gets it.** Local Mbin accounts with a verified email address and an OIDC subject. Banned, deleted, unverified, bot and remote accounts get nothing, and neither does an address that unsubscribed. A member is identified everywhere in the service's own database and in its tokens by Mbin's `"user".oauth_oidc_id`, the Pocket ID subject, never by an Mbin user id.
 * **What it leaves out.** For each member, everything they wrote or commented in, voted on, boosted, bookmarked, or opened a notification about; anything from a magazine or a user they blocked or a magazine they are banned from; anything deleted, removed by a moderator or marked NSFW. A thread in a magazine the member subscribes to ranks lower, not out, in a week they visited Mbin. A member with nothing left gets no email that week.
+* **Threads it already sent.** A thread an earlier digest showed the member comes back only if it has new comments this week. It is then ranked by this week's comments and people alone, quotes the best of this week's comments, and counts "new comments this week" in place of its total. Unsubscribing forgets what a member was shown.
 * **Federated content.** Content that reached Mbin from other servers appears only from magazines the member subscribes to themselves, only in the compact list and never as the featured thread, and is never quoted: it shows its title, its magazine and one figure. It is weighted so that it does not crowd out local conversation.
 * **Unsubscribe.** Every email carries a link signed with `ENGAGEMENT_SIGNING_KEY`. `GET` or `POST /u/{token}` unsubscribes the member at once, with no login and no confirmation, and answers one plain sentence. `HEAD` answers without unsubscribing, and any other method gets a 404. The same URL is in the `List-Unsubscribe` and `List-Unsubscribe-Post` headers (RFC 8058). The token has no expiry. A link that is not valid gets a 404.
 
@@ -39,7 +40,7 @@ The service never writes to Mbin's database, and the role it uses cannot. The ro
 
 Mbin keeps credentials in its database, and the role never sees them. These tables are never granted: `sessions`, `rememberme_token`, `oauth2_access_token`, `oauth2_refresh_token`, `oauth2_authorization_code`, `oauth2_client`, `oauth2_user_consent`, `reset_password_request`, `user_push_subscription`, `site`, `settings`, `messenger_messages`, `message`, `message_thread`, `user_note`, `ap_activity` and `activity`. On `user`, these columns are never granted: `password`, `totp_secret`, `totp_backup_codes`, `private_key`, `old_private_key`, `ip`, and every `oauth_*_id` column except `oauth_oidc_id`. A role that could read any of them could log in as a member.
 
-The service's own database holds two things: who unsubscribed, and which member was sent which week.
+The service's own database holds three things: who unsubscribed, which member was sent which week, and which threads each sent digest showed.
 
 ## Environment
 

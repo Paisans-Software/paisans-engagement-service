@@ -591,3 +591,46 @@ func TestClaimFailureIsRetried(t *testing.T) {
 		t.Fatalf("%d messages after the store recovered", len(rec.Messages))
 	}
 }
+
+// laterSource serves the thread a week later, with item's figures for it.
+type laterSource struct {
+	*fakeSource
+	item digest.Item
+}
+
+func (l laterSource) Hot(context.Context, time.Time, time.Time) ([]digest.Item, error) {
+	return []digest.Item{l.item}, nil
+}
+
+// A thread the last digest showed is left out the next week unless it has
+// new comments, and then it is shown by them.
+func TestShownThreadReturnsOnlyWithNewComments(t *testing.T) {
+	s := storetest.New(t)
+	src := newSource()
+	rec := &mailtest.Recorder{}
+	if err := runner(s, src, rec).Week(context.Background(), week); err != nil {
+		t.Fatal(err)
+	}
+	if len(rec.Messages) != 3 {
+		t.Fatalf("first week: %d messages", len(rec.Messages))
+	}
+
+	next := week.AddDate(0, 0, 7)
+	rec = &mailtest.Recorder{}
+	if err := runner(s, laterSource{src, thread}, rec).Week(context.Background(), next); err != nil {
+		t.Fatal(err)
+	}
+	if len(rec.Messages) != 0 {
+		t.Fatalf("a thread with nothing new was sent again: %d messages", len(rec.Messages))
+	}
+
+	busy := thread
+	busy.NewComments = 2
+	rec = &mailtest.Recorder{}
+	if err := runner(s, laterSource{src, busy}, rec).Week(context.Background(), next.AddDate(0, 0, 7)); err != nil {
+		t.Fatal(err)
+	}
+	if len(rec.Messages) != 3 || !strings.Contains(rec.Messages[0].Text, "2 new comments this week") {
+		t.Fatalf("returning thread: %d messages\n%v", len(rec.Messages), rec.Messages)
+	}
+}
