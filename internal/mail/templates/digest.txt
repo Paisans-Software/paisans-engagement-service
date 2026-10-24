@@ -1,0 +1,19 @@
+Your week on {{.Meta}}
+{{.Dates}}
+
+{{.Stats.NewThreads}} new threads | {{.Stats.Comments}} comments | {{.Stats.NewMembers}} new members
+{{with .Featured}}
+{{.Magazine}} · the big one this week{{if .Label}} · {{.Label}}{{end}}
+{{.Title}}
+{{.URL}}
+{{.Figure}}
+{{if .Excerpt}}"{{.Excerpt}}"
+{{end}}{{end}}{{range .More}}
+{{.Title}}
+{{.URL}}
+{{.Magazine}}{{if .Label}} · {{.Label}}{{end}} · {{.Figure}}
+{{end}}
+See everything on {{.Instance}}: {{.SiteURL}}
+
+You get this because you're a member of {{.Meta}}.
+Unsubscribe from the weekly digest: {{.Unsubscribe}}
