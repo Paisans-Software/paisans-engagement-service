@@ -2,6 +2,7 @@ package store_test
 
 import (
 	"context"
+	"strings"
 	"testing"
 	"time"
 
@@ -81,5 +82,38 @@ func TestFinishRecordsStatus(t *testing.T) {
 	}
 	if err := s.Finish(ctx, "nobody", monday, store.StatusSent); err == nil {
 		t.Fatal("finishing a send that was never claimed should fail")
+	}
+}
+
+func TestReleaseOnlyPending(t *testing.T) {
+	s := storetest.New(t)
+	ctx := context.Background()
+	for _, sub := range []string{"sub-1", "sub-2"} {
+		if _, err := s.Claim(ctx, sub, monday); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := s.Finish(ctx, "sub-2", monday, store.StatusSent); err != nil {
+		t.Fatal(err)
+	}
+	for _, sub := range []string{"sub-1", "sub-2"} {
+		if err := s.Release(ctx, sub, monday); err != nil {
+			t.Fatalf("release %s: %v", sub, err)
+		}
+	}
+	// The released send can be claimed again; the one already sent cannot.
+	if ok, err := s.Claim(ctx, "sub-1", monday); err != nil || !ok {
+		t.Fatalf("reclaim after release: %v, %v", ok, err)
+	}
+	if ok, err := s.Claim(ctx, "sub-2", monday); err != nil || ok {
+		t.Fatalf("a sent row was released: %v, %v", ok, err)
+	}
+}
+
+func TestStoreErrorsNameNoSubject(t *testing.T) {
+	s := storetest.New(t)
+	err := s.Finish(context.Background(), "secret-subject", monday, store.StatusSent)
+	if err == nil || strings.Contains(err.Error(), "secret-subject") {
+		t.Fatalf("Finish error: %v", err)
 	}
 }

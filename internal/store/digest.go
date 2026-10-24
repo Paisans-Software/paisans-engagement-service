@@ -55,10 +55,22 @@ func (s *Store) Finish(ctx context.Context, subject string, week time.Time, stat
 		return err
 	}
 	if tag.RowsAffected() != 1 {
-		return fmt.Errorf("no claimed send for %s in the week of %s", subject, weekDate(week))
+		// No subject in the message: it is an OIDC identifier and the
+		// error reaches the log.
+		return fmt.Errorf("no claimed send in the week of %s", weekDate(week))
 	}
 	return nil
 }
 
 // weekDate is the calendar date of t in t's own location, as YYYY-MM-DD.
 func weekDate(t time.Time) string { return t.Format("2006-01-02") }
+
+// Release gives up a claim on a send that never reached the mail server, so
+// a later run can claim the member again. Only a pending row is removed: a
+// send that finished, however it ended, stays recorded.
+func (s *Store) Release(ctx context.Context, subject string, week time.Time) error {
+	_, err := s.pool.Exec(ctx,
+		`DELETE FROM sends WHERE subject=$1 AND week=$2::date AND status='pending'`,
+		subject, weekDate(week))
+	return err
+}

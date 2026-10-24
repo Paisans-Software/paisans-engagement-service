@@ -34,6 +34,8 @@ type fakeSource struct {
 	joined  map[string]bool
 	hotErr  error
 	hots    atomic.Int32
+	// viewErr fails View for the member with that subject.
+	viewErr map[string]error
 	// ready, when set, holds every runner in Members until all have reached
 	// it, so concurrent runs overlap rather than one finishing first.
 	ready *sync.WaitGroup
@@ -74,6 +76,9 @@ func (f *fakeSource) Hot(_ context.Context, from, to time.Time) ([]digest.Item, 
 }
 
 func (f *fakeSource) View(_ context.Context, m digest.Member, _, _ time.Time, _ []digest.Item) (digest.View, error) {
+	if err := f.viewErr[m.Subject]; err != nil {
+		return digest.View{}, err
+	}
 	v := digest.View{Joined: map[digest.Key]bool{}}
 	if f.joined[m.Subject] {
 		v.Joined[thread.Key] = true
@@ -340,5 +345,33 @@ func TestLoopIdleOutsideTheDay(t *testing.T) {
 	<-done
 	if h := src.hots.Load(); h != 0 {
 		t.Fatalf("Week ran %d times outside the day", h)
+	}
+}
+
+// An outage that begins after the shared reads leaves the member unclaimed,
+// so the next attempt reaches them, and nobody already mailed gets a second.
+func TestViewErrorIsRetried(t *testing.T) {
+	s := storetest.New(t)
+	src := newSource()
+	src.viewErr = map[string]error{"sub-2": errors.New("mbin is down")}
+	rec := &mailtest.Recorder{}
+	r := runner(s, src, rec)
+	if err := r.Week(context.Background(), week); err == nil {
+		t.Fatal("Week succeeded although a member's view could not be read")
+	}
+	got := statuses(t, s)
+	if _, ok := got["sub-2"]; ok || len(got) != 2 {
+		t.Fatalf("statuses after the failure: %v", got)
+	}
+	src.viewErr = nil
+	if err := r.Week(context.Background(), week); err != nil {
+		t.Fatal(err)
+	}
+	n := countTo(rec.Messages)
+	if len(rec.Messages) != 3 || n["one@example.org"] != 1 || n["two@example.org"] != 1 || n["three@example.org"] != 1 {
+		t.Fatalf("messages by recipient: %v", n)
+	}
+	if st := statuses(t, s)["sub-2"]; st != string(store.StatusSent) {
+		t.Fatalf("status %q", st)
 	}
 }

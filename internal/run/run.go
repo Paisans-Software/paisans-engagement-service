@@ -34,9 +34,10 @@ type Runner struct {
 // member is claimed in the store before anything is sent to them, so a second
 // call, a restart or a second replica skips whoever is already claimed.
 //
-// A send that fails is recorded as failed and not retried: its claim stands.
-// Week returns an error only when it could not read Mbin or the store, and a
-// retry then picks up the members it had not claimed.
+// A send the mail server refused is recorded as failed and not retried: the
+// message may have gone out. A member whose digest failed before it reached
+// the sender has their claim released, and Week returns an error so the next
+// attempt reaches them; so does any error reading Mbin or the store.
 func (r *Runner) Week(ctx context.Context, week time.Time) error {
 	from := week.AddDate(0, 0, -7)
 	// Everything shared is read before anyone is claimed, so an outage of
@@ -74,6 +75,20 @@ func (r *Runner) Week(ctx context.Context, week time.Time) error {
 			continue
 		}
 		status, err := r.one(ctx, m, from, week, items, stats)
+		if status == "" {
+			n.failed++
+			if firstErr == nil {
+				firstErr = err
+			}
+			// Released even when ctx has ended, or the member would stay
+			// claimed and unsent for the week.
+			rctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
+			if rerr := r.Store.Release(rctx, m.Subject, week); rerr != nil {
+				slog.Error("digest claim not released; the member is skipped this week", "member", m.ID, "error", rerr)
+			}
+			cancel()
+			continue
+		}
 		switch status {
 		case store.StatusSent:
 			n.sent++
@@ -95,20 +110,21 @@ func (r *Runner) Week(ctx context.Context, week time.Time) error {
 	return firstErr
 }
 
-// one handles a claimed member and says how their send ended. The error
-// explains a failure; it carries no address, since the sender's errors are
-// already reduced to a reason and a code.
+// one handles a claimed member and says how their send ended. An empty status
+// means it failed before anything reached the sender, so the claim is to be
+// released. The error explains a failure; it carries no address, since the
+// sender's errors are already reduced to a reason and a code.
 func (r *Runner) one(ctx context.Context, m digest.Member, from, to time.Time, items []digest.Item, stats digest.Stats) (store.Status, error) {
 	unsub, err := r.Store.Unsubscribed(ctx, m.Subject)
 	if err != nil {
-		return store.StatusFailed, fmt.Errorf("read unsubscribes: %w", err)
+		return "", fmt.Errorf("read unsubscribes: %w", err)
 	}
 	if unsub {
 		return store.StatusUnsubscribed, nil
 	}
 	v, err := r.Source.View(ctx, m, from, to, items)
 	if err != nil {
-		return store.StatusFailed, fmt.Errorf("read the member's view: %w", err)
+		return "", fmt.Errorf("read the member's view: %w", err)
 	}
 	d, ok := digest.Build(items, v, stats)
 	if !ok {
@@ -116,7 +132,7 @@ func (r *Runner) one(ctx context.Context, m digest.Member, from, to time.Time, i
 	}
 	msg, err := mail.Render(d, r.Names, r.SiteURL, r.PublicURL+"/u/"+token.Sign(r.Key, m.Subject), from, to)
 	if err != nil {
-		return store.StatusFailed, fmt.Errorf("render: %w", err)
+		return "", fmt.Errorf("render: %w", err)
 	}
 	msg.To = m.Email
 	if err := r.Sender.Send(ctx, msg); err != nil {
