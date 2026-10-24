@@ -18,10 +18,10 @@ func TestRoundTrip(t *testing.T) {
 }
 
 func TestAlteredSubjectFails(t *testing.T) {
-	_, mac, _ := strings.Cut(Sign(key, "alice"), ".")
+	_, sig, _ := strings.Cut(Sign(key, "alice"), ".")
 	forged := Sign(key, "bob")
 	forgedSubject, _, _ := strings.Cut(forged, ".")
-	if _, ok := Verify(key, forgedSubject+"."+mac); ok {
+	if _, ok := Verify(key, forgedSubject+"."+sig); ok {
 		t.Fatal("token with swapped subject verified")
 	}
 }
@@ -34,8 +34,8 @@ func TestOtherKeyFails(t *testing.T) {
 
 func TestMalformedFails(t *testing.T) {
 	good := Sign(key, "alice")
-	subject, mac, _ := strings.Cut(good, ".")
-	for _, tok := range []string{"", "a", "a.b.c", "!!!.!!!", subject + ".!!!", "!!!." + mac, subject + ".", "." + mac, good + "."} {
+	subject, sig, _ := strings.Cut(good, ".")
+	for _, tok := range []string{"", "a", "a.b.c", "!!!.!!!", subject + ".!!!", "!!!." + sig, subject + ".", "." + sig, good + "."} {
 		if sub, ok := Verify(key, tok); ok {
 			t.Errorf("Verify(%q) = %q, true", tok, sub)
 		}
@@ -48,3 +48,32 @@ func TestTokenIsURLSafe(t *testing.T) {
 		t.Fatalf("token %q is not URL safe", tok)
 	}
 }
+
+// A token for an empty subject is never one minted for a member.
+func TestEmptySubjectFails(t *testing.T) {
+	if sub, ok := Verify(key, Sign(key, "")); ok {
+		t.Fatalf("Verify(Sign(\"\")) = %q, true", sub)
+	}
+}
+
+// Base64 with stray low bits decodes to the same bytes as the canonical
+// form, so without strict decoding one link would have many spellings.
+func TestNonCanonicalEncodingFails(t *testing.T) {
+	good := Sign(key, "ab") // "ab" encodes to "YWI", whose last character carries two spare bits
+	subject, sig, _ := strings.Cut(good, ".")
+	if subject != "YWI" {
+		t.Fatalf("subject encodes to %q", subject)
+	}
+	if _, ok := Verify(key, "YWJ."+sig); ok {
+		t.Fatal("a subject with nonzero padding bits verified")
+	}
+	// The MAC is 32 bytes: 43 characters, the last with two spare bits.
+	// The canonical last character has them clear; setting one leaves the
+	// decoded bytes the same.
+	alt := b64[strings.IndexByte(b64, sig[len(sig)-1])|1]
+	if _, ok := Verify(key, subject+"."+sig[:len(sig)-1]+string(alt)); ok {
+		t.Fatal("a MAC with nonzero padding bits verified")
+	}
+}
+
+const b64 = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_"

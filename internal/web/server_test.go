@@ -89,16 +89,37 @@ func TestBadTokenIs404(t *testing.T) {
 func TestOtherPathsAre404(t *testing.T) {
 	h := NewServer(storetest.New(t), key)
 	for _, c := range []struct{ method, path string }{
-		{"GET", "/"}, {"GET", "/u/"}, {"GET", "/admin"}, {"PUT", "/u/x"}, {"DELETE", "/u/x"}, {"GET", "/u/a/b"},
+		{"GET", "/"}, {"GET", "/u/"}, {"GET", "/admin"}, {"GET", "/u/a/b"}, {"POST", "/healthz"},
 	} {
-		rec := do(h, c.method, c.path, "")
-		if rec.Code != 404 && rec.Code != 405 {
-			t.Errorf("%s %s = %d, want 404 or 405", c.method, c.path, rec.Code)
+		if rec := do(h, c.method, c.path, ""); rec.Code != 404 {
+			t.Errorf("%s %s = %d, want 404", c.method, c.path, rec.Code)
 		}
 	}
-	if rec := do(h, "GET", "/", ""); rec.Code != 404 {
-		t.Errorf("GET / = %d, want 404", rec.Code)
+}
+
+// Any method but GET, POST and HEAD on a real link is a 404 and changes
+// nothing, as if the route were not there.
+func TestOtherMethodsAre404(t *testing.T) {
+	st := storetest.New(t)
+	h := NewServer(st, key)
+	for _, m := range []string{"PUT", "DELETE", "PATCH", "OPTIONS"} {
+		wantBody(t, do(h, m, "/u/"+token.Sign(key, "sub-5"), ""), 404, badBody)
 	}
+	if unsubscribed(t, st, "sub-5") {
+		t.Fatal("another method unsubscribed")
+	}
+}
+
+// Link checkers and mail scanners send HEAD; it must not unsubscribe.
+func TestHeadDoesNotUnsubscribe(t *testing.T) {
+	st := storetest.New(t)
+	h := NewServer(st, key)
+	rec := do(h, "HEAD", "/u/"+token.Sign(key, "sub-4"), "")
+	wantBody(t, rec, 200, "")
+	if unsubscribed(t, st, "sub-4") {
+		t.Fatal("HEAD unsubscribed sub-4")
+	}
+	wantBody(t, do(h, "HEAD", "/u/garbage", ""), 404, "")
 }
 
 func TestHealthz(t *testing.T) {

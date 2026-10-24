@@ -25,6 +25,14 @@ func NewServer(st *store.Store, key []byte) http.Handler {
 	// (List-Unsubscribe=One-Click) carries nothing the route needs.
 	mux.HandleFunc("GET /u/{token}", s.unsubscribe)
 	mux.HandleFunc("POST /u/{token}", s.unsubscribe)
+	// A GET pattern also matches HEAD, which link checkers and mail
+	// scanners send without a member clicking anything, so HEAD has its own
+	// handler that changes nothing.
+	mux.HandleFunc("HEAD /u/{token}", s.head)
+	// Without these the mux answers another method on a known path with
+	// 405, which says the path exists.
+	mux.HandleFunc("/u/{token}", s.invalid)
+	mux.HandleFunc("/healthz", http.NotFound)
 	return securityHeaders(mux)
 }
 
@@ -48,12 +56,9 @@ func (s *server) healthz(w http.ResponseWriter, r *http.Request) {
 
 func (s *server) unsubscribe(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
-	// A token for an empty subject is never one the service minted for a
-	// member, so it is as invalid as a bad signature.
 	subject, ok := token.Verify(s.key, r.PathValue("token"))
-	if !ok || subject == "" {
-		w.WriteHeader(http.StatusNotFound)
-		w.Write([]byte("This unsubscribe link is not valid."))
+	if !ok {
+		s.invalid(w, r)
 		return
 	}
 	if err := s.store.Unsubscribe(r.Context(), subject); err != nil {
@@ -64,4 +69,17 @@ func (s *server) unsubscribe(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.Write([]byte("You're unsubscribed from the weekly digest."))
+}
+
+func (s *server) head(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+	if _, ok := token.Verify(s.key, r.PathValue("token")); !ok {
+		w.WriteHeader(http.StatusNotFound)
+	}
+}
+
+func (s *server) invalid(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+	w.WriteHeader(http.StatusNotFound)
+	w.Write([]byte("This unsubscribe link is not valid."))
 }
