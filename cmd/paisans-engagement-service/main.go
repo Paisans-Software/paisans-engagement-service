@@ -75,6 +75,24 @@ func serve() error {
 		return err
 	}
 
+	// loopDone, once the digest loop is started, closes when it has
+	// returned. It is waited on before the deferred Close calls, so a member
+	// being sent at shutdown gets their claim finished or released rather
+	// than left pending. stop comes first, so a return for any other reason
+	// also ends the loop.
+	var loopDone chan struct{}
+	defer func() {
+		if loopDone == nil {
+			return
+		}
+		stop()
+		select {
+		case <-loopDone:
+		case <-time.After(10 * time.Second):
+			slog.Warn("the digest run did not stop in time; a member may stay pending this week")
+		}
+	}()
+
 	// Unsubscribe links in mail already sent keep working without a mail
 	// host, so the route is served either way; only the sending is skipped.
 	if cfg.SMTP.Host == "" {
@@ -94,7 +112,11 @@ func serve() error {
 			Names:   mail.Names{Instance: cfg.InstanceTitle, Meta: cfg.MetaTitle},
 			SiteURL: cfg.MbinURL, PublicURL: cfg.PublicURL, Key: cfg.SigningKey,
 		}
-		go run.Loop(ctx, runner, time.Now, time.Minute)
+		loopDone = make(chan struct{})
+		go func() {
+			defer close(loopDone)
+			run.Loop(ctx, runner, time.Now, time.Minute)
+		}()
 	}
 
 	srv := &http.Server{Addr: cfg.ListenAddr, Handler: web.NewServer(st, cfg.SigningKey), ReadHeaderTimeout: 10 * time.Second}

@@ -18,23 +18,26 @@ func configForTest(port int) config.SMTP {
 	return config.SMTP{Host: "127.0.0.1", Port: port, From: "digest@example.org", FromName: "Talk", TLS: "none"}
 }
 
-// fakeSMTP accepts mail, keeps the DATA of each message, and refuses
-// recipients with a reply that names the address when reject is set.
+// fakeSMTP accepts mail and keeps the DATA of each message. Each field of
+// refuse, when set, is the reply that replaces success at that step; a reply
+// to RCPT has the address appended, as real servers do.
 type fakeSMTP struct {
 	port   int
 	mu     sync.Mutex
 	data   []string
-	reject bool
+	refuse refusals
 }
 
-func newFakeSMTP(t *testing.T, reject bool) *fakeSMTP {
+type refusals struct{ mail, rcpt, dataEnd, rset string }
+
+func newFakeSMTP(t *testing.T, refuse refusals) *fakeSMTP {
 	t.Helper()
 	l, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { l.Close() })
-	f := &fakeSMTP{port: l.Addr().(*net.TCPAddr).Port, reject: reject}
+	f := &fakeSMTP{port: l.Addr().(*net.TCPAddr).Port, refuse: refuse}
 	go func() {
 		for {
 			c, err := l.Accept()
@@ -60,9 +63,13 @@ func (f *fakeSMTP) serve(c net.Conn) {
 		switch {
 		case strings.HasPrefix(cmd, "EHLO"), strings.HasPrefix(cmd, "HELO"):
 			fmt.Fprint(c, "250-test\r\n250 OK\r\n")
-		case strings.HasPrefix(cmd, "RCPT TO:") && f.reject:
+		case strings.HasPrefix(cmd, "MAIL FROM:") && f.refuse.mail != "":
+			fmt.Fprintf(c, "%s\r\n", f.refuse.mail)
+		case strings.HasPrefix(cmd, "RCPT TO:") && f.refuse.rcpt != "":
 			addr := strings.TrimSpace(line[len("RCPT TO:"):])
-			fmt.Fprintf(c, "550 5.1.1 %s: no such user here\r\n", addr)
+			fmt.Fprintf(c, "%s %s\r\n", f.refuse.rcpt, addr)
+		case cmd == "RSET" && f.refuse.rset != "":
+			fmt.Fprintf(c, "%s\r\n", f.refuse.rset)
 		case cmd == "DATA":
 			fmt.Fprint(c, "354 go\r\n")
 			var b strings.Builder
@@ -75,6 +82,10 @@ func (f *fakeSMTP) serve(c net.Conn) {
 					break
 				}
 				b.WriteString(l)
+			}
+			if f.refuse.dataEnd != "" {
+				fmt.Fprintf(c, "%s\r\n", f.refuse.dataEnd)
+				continue
 			}
 			f.mu.Lock()
 			f.data = append(f.data, b.String())
@@ -97,7 +108,7 @@ func testMessage() Message {
 }
 
 func TestSendHeaders(t *testing.T) {
-	f := newFakeSMTP(t, false)
+	f := newFakeSMTP(t, refusals{})
 	s, err := NewSMTP(configForTest(f.port))
 	if err != nil {
 		t.Fatal(err)
@@ -126,7 +137,7 @@ func TestSendHeaders(t *testing.T) {
 }
 
 func TestSendFromWithoutName(t *testing.T) {
-	f := newFakeSMTP(t, false)
+	f := newFakeSMTP(t, refusals{})
 	c := configForTest(f.port)
 	c.FromName = ""
 	s, _ := NewSMTP(c)
@@ -158,7 +169,7 @@ func TestSanitizeDropsAddresses(t *testing.T) {
 }
 
 func TestSendErrorHasNoAddress(t *testing.T) {
-	f := newFakeSMTP(t, true)
+	f := newFakeSMTP(t, refusals{rcpt: "550 5.1.1 no such user here:"})
 	s, _ := NewSMTP(configForTest(f.port))
 	err := s.Send(t.Context(), testMessage())
 	if err == nil || strings.Contains(err.Error(), "@") || strings.Contains(err.Error(), "example") {
@@ -170,5 +181,80 @@ func TestSendErrorHasNoAddress(t *testing.T) {
 	err = s.Send(t.Context(), bad)
 	if err == nil || strings.Contains(err.Error(), "address@@") {
 		t.Fatalf("%v", err)
+	}
+}
+
+// A relay that cannot be reached took nothing, so the send is to be retried,
+// and the error says the relay is down so the run stops trying others.
+func TestRefusedConnectionIsNotSent(t *testing.T) {
+	l, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	port := l.Addr().(*net.TCPAddr).Port
+	l.Close()
+	s, _ := NewSMTP(configForTest(port))
+	err = s.Send(t.Context(), testMessage())
+	if !errors.Is(err, ErrNotSent) || !errors.Is(err, ErrRelayUnavailable) {
+		t.Fatalf("got %v, want ErrNotSent and ErrRelayUnavailable", err)
+	}
+}
+
+// Every refusal before DATA leaves the message with the service; one at or
+// after the end of DATA may have been delivered and is not to be retried.
+func TestSendErrorClassification(t *testing.T) {
+	for _, c := range []struct {
+		name          string
+		refuse        refusals
+		notSent, down bool
+	}{
+		{"mail from", refusals{mail: "421 4.3.2 shutting down"}, true, true},
+		{"rcpt to", refusals{rcpt: "450 4.2.1 try later:"}, true, false},
+		{"rcpt to permanent", refusals{rcpt: "550 5.1.1 no such user here:"}, true, false},
+		{"end of data", refusals{dataEnd: "554 5.7.1 rejected as spam"}, false, false},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			f := newFakeSMTP(t, c.refuse)
+			s, _ := NewSMTP(configForTest(f.port))
+			err := s.Send(t.Context(), testMessage())
+			if err == nil {
+				t.Fatal("Send succeeded")
+			}
+			if errors.Is(err, ErrNotSent) != c.notSent || errors.Is(err, ErrRelayUnavailable) != c.down {
+				t.Fatalf("%v: ErrNotSent %v, ErrRelayUnavailable %v; want %v, %v", err,
+					errors.Is(err, ErrNotSent), errors.Is(err, ErrRelayUnavailable), c.notSent, c.down)
+			}
+			if strings.Contains(err.Error(), "@") {
+				t.Fatalf("leaked: %v", err)
+			}
+			t.Log(err)
+		})
+	}
+}
+
+// A relay that accepted the message but fails the reset after it has the
+// mail; a retry would send a second copy.
+func TestResetAfterDeliveryIsSent(t *testing.T) {
+	f := newFakeSMTP(t, refusals{rset: "421 4.3.2 going away"})
+	s, _ := NewSMTP(configForTest(f.port))
+	if err := s.Send(t.Context(), testMessage()); err != nil {
+		t.Fatalf("got %v, want nil", err)
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if len(f.data) != 1 {
+		t.Fatalf("relay holds %d messages", len(f.data))
+	}
+}
+
+// A recipient address that cannot be parsed never reached the relay.
+func TestBadRecipientIsNotSent(t *testing.T) {
+	f := newFakeSMTP(t, refusals{})
+	s, _ := NewSMTP(configForTest(f.port))
+	m := testMessage()
+	m.To = "not an address@@"
+	err := s.Send(t.Context(), m)
+	if !errors.Is(err, ErrNotSent) || errors.Is(err, ErrRelayUnavailable) {
+		t.Fatalf("got %v", err)
 	}
 }

@@ -1,9 +1,11 @@
 package run_test
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -288,25 +290,53 @@ func TestUnsubscribeLinkVerifies(t *testing.T) {
 	}
 }
 
+// clock is a fixed time that counts how often Loop reads it, which is once a
+// tick, so a test can wait for ticks to pass rather than for time to.
+type clock struct {
+	at    time.Time
+	reads atomic.Int32
+}
+
+func (c *clock) now() time.Time { c.reads.Add(1); return c.at }
+
+// waitTicks returns once Loop has read the clock n more times.
+func (c *clock) waitTicks(t *testing.T, n int32) {
+	t.Helper()
+	target := c.reads.Load() + n
+	deadline := time.Now().Add(5 * time.Second)
+	for c.reads.Load() < target {
+		if time.Now().After(deadline) {
+			t.Fatalf("Loop read the clock %d times, want %d", c.reads.Load(), target)
+		}
+		time.Sleep(time.Millisecond)
+	}
+}
+
 func TestLoopRunsOncePerWeek(t *testing.T) {
 	s := storetest.New(t)
 	src := newSource()
 	rec := &mailtest.Recorder{}
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
-	now := func() time.Time { return week.Add(30 * time.Minute) }
+	defer func() { cancel(); <-done }()
+	c := &clock{at: week.Add(30 * time.Minute)}
 	go func() {
-		run.Loop(ctx, runner(s, src, rec), now, time.Millisecond)
+		run.Loop(ctx, runner(s, src, rec), c.now, time.Millisecond)
 		close(done)
 	}()
-	time.Sleep(100 * time.Millisecond)
-	cancel()
-	<-done
+	deadline := time.Now().Add(5 * time.Second)
+	for len(rec.Sent()) < 3 {
+		if time.Now().After(deadline) {
+			t.Fatalf("%d messages", len(rec.Sent()))
+		}
+		time.Sleep(time.Millisecond)
+	}
+	c.waitTicks(t, 5)
 	if h := src.hots.Load(); h != 1 {
 		t.Fatalf("Week read the source %d times", h)
 	}
-	if len(rec.Messages) != 3 {
-		t.Fatalf("%d messages", len(rec.Messages))
+	if n := len(rec.Sent()); n != 3 {
+		t.Fatalf("%d messages", n)
 	}
 }
 
@@ -336,15 +366,38 @@ func TestLoopIdleOutsideTheDay(t *testing.T) {
 	src := newSource()
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
+	defer func() { cancel(); <-done }()
+	c := &clock{at: week.Add(-time.Hour)}
 	go func() {
-		run.Loop(ctx, runner(s, src, &mailtest.Recorder{}), func() time.Time { return week.Add(-time.Hour) }, time.Millisecond)
+		run.Loop(ctx, runner(s, src, &mailtest.Recorder{}), c.now, time.Millisecond)
 		close(done)
 	}()
-	time.Sleep(50 * time.Millisecond)
-	cancel()
-	<-done
+	c.waitTicks(t, 5)
 	if h := src.hots.Load(); h != 0 {
 		t.Fatalf("Week ran %d times outside the day", h)
+	}
+}
+
+// A failing week is retried less and less often, so an outage that lasts
+// all day does not re-read Mbin every tick.
+func TestLoopBacksOffAfterFailures(t *testing.T) {
+	s := storetest.New(t)
+	src := newSource()
+	src.hotErr = errors.New("mbin is down")
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	c := &clock{at: week.Add(time.Hour)}
+	go func() {
+		run.Loop(ctx, runner(s, src, &mailtest.Recorder{}), c.now, time.Millisecond)
+		close(done)
+	}()
+	// Doubling from 1ms, the waits before the eighth attempt add up to
+	// 127ms; at one attempt a tick there would be well over a hundred.
+	time.Sleep(200 * time.Millisecond)
+	cancel()
+	<-done
+	if h := src.hots.Load(); h < 3 || h > 12 {
+		t.Fatalf("Loop tried %d times in 200ms", h)
 	}
 }
 
@@ -373,5 +426,132 @@ func TestViewErrorIsRetried(t *testing.T) {
 	}
 	if st := statuses(t, s)["sub-2"]; st != string(store.StatusSent) {
 		t.Fatalf("status %q", st)
+	}
+}
+
+// notSentFor refuses the send to addr as never handed over, with err.
+type notSentFor struct {
+	addr  string
+	err   error
+	tries atomic.Int32
+	mailtest.Recorder
+}
+
+func (f *notSentFor) Send(ctx context.Context, m mail.Message) error {
+	f.tries.Add(1)
+	if f.addr == "" || m.To == f.addr {
+		return f.err
+	}
+	return f.Recorder.Send(ctx, m)
+}
+
+// A relay outage stops the run at the first member and leaves everyone
+// unclaimed, so the next attempt mails them all.
+func TestRelayOutageIsRetried(t *testing.T) {
+	s := storetest.New(t)
+	snd := &notSentFor{err: fmt.Errorf("%w: could not connect", mail.ErrRelayUnavailable)}
+	r := runner(s, newSource(), snd)
+	if err := r.Week(context.Background(), week); !errors.Is(err, mail.ErrNotSent) {
+		t.Fatalf("Week: %v, want ErrNotSent", err)
+	}
+	if n := snd.tries.Load(); n != 1 {
+		t.Fatalf("tried the relay %d times during an outage", n)
+	}
+	if got := statuses(t, s); len(got) != 0 {
+		t.Fatalf("rows after the outage: %v", got)
+	}
+	snd.err = nil
+	snd.addr = "nobody@example.org"
+	if err := r.Week(context.Background(), week); err != nil {
+		t.Fatal(err)
+	}
+	if n := countTo(snd.Messages); len(snd.Messages) != 3 || n["one@example.org"] != 1 {
+		t.Fatalf("messages by recipient: %v", n)
+	}
+	for sub, st := range statuses(t, s) {
+		if st != string(store.StatusSent) {
+			t.Fatalf("%s: %s", sub, st)
+		}
+	}
+}
+
+// One recipient the relay would not take holds up nobody else, and is
+// retried on the next attempt.
+func TestRecipientRefusedIsRetried(t *testing.T) {
+	s := storetest.New(t)
+	snd := &notSentFor{addr: "one@example.org", err: fmt.Errorf("%w: RCPT TO (code 450)", mail.ErrNotSent)}
+	r := runner(s, newSource(), snd)
+	if err := r.Week(context.Background(), week); !errors.Is(err, mail.ErrNotSent) {
+		t.Fatalf("Week: %v, want ErrNotSent", err)
+	}
+	got := statuses(t, s)
+	if _, ok := got["sub-1"]; ok || got["sub-2"] != string(store.StatusSent) || got["sub-3"] != string(store.StatusSent) {
+		t.Fatalf("statuses: %v", got)
+	}
+	snd.addr = "nobody@example.org"
+	if err := r.Week(context.Background(), week); err != nil {
+		t.Fatal(err)
+	}
+	if n := countTo(snd.Messages); len(snd.Messages) != 3 || n["one@example.org"] != 1 {
+		t.Fatalf("messages by recipient: %v", n)
+	}
+}
+
+// A row another runner holds is left exactly as it is.
+func TestPendingRowIsSkipped(t *testing.T) {
+	s := storetest.New(t)
+	c := storetest.Conn(t, s)
+	if _, err := c.Exec(context.Background(),
+		`INSERT INTO sends (subject, week, status, at) VALUES ('sub-2', '2026-10-26', 'pending', '2026-10-26 08:00:00+00')`); err != nil {
+		t.Fatal(err)
+	}
+	rec := &mailtest.Recorder{}
+	if err := runner(s, newSource(), rec).Week(context.Background(), week); err != nil {
+		t.Fatal(err)
+	}
+	if n := countTo(rec.Messages); len(rec.Messages) != 2 || n["two@example.org"] != 0 {
+		t.Fatalf("messages by recipient: %v", n)
+	}
+	var st, at string
+	if err := c.QueryRow(context.Background(),
+		`SELECT status, at::text FROM sends WHERE subject='sub-2'`).Scan(&st, &at); err != nil {
+		t.Fatal(err)
+	}
+	if st != "pending" || at != "2026-10-26 08:00:00+00" {
+		t.Fatalf("the held row became %s at %s", st, at)
+	}
+}
+
+// A store that cannot take claims mails nobody and counts them unclaimed;
+// once it recovers, the retry reaches everyone.
+func TestClaimFailureIsRetried(t *testing.T) {
+	s := storetest.New(t)
+	c := storetest.Conn(t, s)
+	if _, err := c.Exec(context.Background(), `ALTER TABLE sends RENAME TO sends_away`); err != nil {
+		t.Fatal(err)
+	}
+	var logs bytes.Buffer
+	prev := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&logs, nil)))
+	defer slog.SetDefault(prev)
+	rec := &mailtest.Recorder{}
+	r := runner(s, newSource(), rec)
+	if err := r.Week(context.Background(), week); err == nil {
+		t.Fatal("Week succeeded without a store to claim in")
+	}
+	if len(rec.Messages) != 0 {
+		t.Fatalf("%d messages sent unclaimed", len(rec.Messages))
+	}
+	if !strings.Contains(logs.String(), "unclaimed=3") || !strings.Contains(logs.String(), "failed=0") {
+		t.Fatalf("summary: %s", logs.String())
+	}
+	if _, err := c.Exec(context.Background(), `ALTER TABLE sends_away RENAME TO sends`); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.Week(context.Background(), week); err != nil {
+		t.Fatal(err)
+	}
+	if len(rec.Messages) != 3 {
+		t.Fatalf("%d messages after the store recovered", len(rec.Messages))
 	}
 }

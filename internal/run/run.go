@@ -2,6 +2,7 @@ package run
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"time"
@@ -34,10 +35,13 @@ type Runner struct {
 // member is claimed in the store before anything is sent to them, so a second
 // call, a restart or a second replica skips whoever is already claimed.
 //
-// A send the mail server refused is recorded as failed and not retried: the
-// message may have gone out. A member whose digest failed before it reached
-// the sender has their claim released, and Week returns an error so the next
-// attempt reaches them; so does any error reading Mbin or the store.
+// A send the mail server refused at DATA or after is recorded as failed and
+// not retried: the message may have gone out. A member whose digest was never
+// handed to the relay, because reading or rendering it failed or the relay
+// refused it earlier, has their claim released, and Week returns an error so
+// the next attempt reaches them; so does any error reading Mbin or the store.
+// When the relay itself is unavailable the run stops at that member, since
+// everyone after them would fail the same way.
 func (r *Runner) Week(ctx context.Context, week time.Time) error {
 	from := week.AddDate(0, 0, -7)
 	// Everything shared is read before anyone is claimed, so an outage of
@@ -55,7 +59,7 @@ func (r *Runner) Week(ctx context.Context, week time.Time) error {
 		return fmt.Errorf("read the week's figures: %w", err)
 	}
 
-	var n struct{ sent, empty, unsubscribed, failed, skipped int }
+	var n struct{ sent, empty, unsubscribed, failed, unclaimed, skipped int }
 	var firstErr error
 	for _, m := range members {
 		if err := ctx.Err(); err != nil {
@@ -64,7 +68,7 @@ func (r *Runner) Week(ctx context.Context, week time.Time) error {
 		ok, err := r.Store.Claim(ctx, m.Subject, week)
 		if err != nil {
 			// Unclaimed, so the retry that the error causes reaches them.
-			n.failed++
+			n.unclaimed++
 			if firstErr == nil {
 				firstErr = fmt.Errorf("claim a send: %w", err)
 			}
@@ -75,18 +79,22 @@ func (r *Runner) Week(ctx context.Context, week time.Time) error {
 			continue
 		}
 		status, err := r.one(ctx, m, from, week, items, stats)
+		// Released or finished even when ctx has ended, or the member would
+		// stay claimed and unsent for the week.
+		wctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
 		if status == "" {
-			n.failed++
+			n.unclaimed++
 			if firstErr == nil {
 				firstErr = err
 			}
-			// Released even when ctx has ended, or the member would stay
-			// claimed and unsent for the week.
-			rctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
-			if rerr := r.Store.Release(rctx, m.Subject, week); rerr != nil {
+			if rerr := r.Store.Release(wctx, m.Subject, week); rerr != nil {
 				slog.Error("digest claim not released; the member is skipped this week", "member", m.ID, "error", rerr)
 			}
 			cancel()
+			if errors.Is(err, mail.ErrRelayUnavailable) {
+				slog.Warn("mail relay unavailable; the remaining members wait for the next attempt", "error", err)
+				break
+			}
 			continue
 		}
 		switch status {
@@ -101,18 +109,18 @@ func (r *Runner) Week(ctx context.Context, week time.Time) error {
 			// The member id identifies the row in Mbin without naming them.
 			slog.Warn("digest not sent", "member", m.ID, "error", err)
 		}
-		if err := r.Store.Finish(ctx, m.Subject, week, status); err != nil && firstErr == nil {
+		if err := r.Store.Finish(wctx, m.Subject, week, status); err != nil && firstErr == nil {
 			firstErr = fmt.Errorf("record a send: %w", err)
 		}
+		cancel()
 	}
-	slog.Info("digest run", "week", week.Format("2006-01-02"),
-		"sent", n.sent, "empty", n.empty, "unsubscribed", n.unsubscribed, "failed", n.failed, "skipped", n.skipped)
+	slog.Info("digest run", "week", week.Format("2006-01-02"), "sent", n.sent, "empty", n.empty,
+		"unsubscribed", n.unsubscribed, "failed", n.failed, "unclaimed", n.unclaimed, "skipped", n.skipped)
 	return firstErr
 }
 
 // one handles a claimed member and says how their send ended. An empty status
-// means it failed before anything reached the sender, so the claim is to be
-// released. The error explains a failure; it carries no address, since the
+// means nothing was handed to the relay, so the claim is to be released. The error explains a failure; it carries no address, since the
 // sender's errors are already reduced to a reason and a code.
 func (r *Runner) one(ctx context.Context, m digest.Member, from, to time.Time, items []digest.Item, stats digest.Stats) (store.Status, error) {
 	unsub, err := r.Store.Unsubscribed(ctx, m.Subject)
@@ -136,29 +144,43 @@ func (r *Runner) one(ctx context.Context, m digest.Member, from, to time.Time, i
 	}
 	msg.To = m.Email
 	if err := r.Sender.Send(ctx, msg); err != nil {
+		if errors.Is(err, mail.ErrNotSent) {
+			return "", err
+		}
 		return store.StatusFailed, err
 	}
 	return store.StatusSent, nil
 }
 
+// maxBackoff is the longest Loop waits between attempts at a failing week.
+const maxBackoff = 15 * time.Minute
+
 // Loop checks every tick whether a week is due and runs it until it succeeds
-// once. The weeks that succeeded are remembered only in memory: after a
-// restart, the claims in the store keep a rerun from mailing anyone twice.
+// once. After a failed run the wait doubles, up to maxBackoff, so an outage
+// that lasts all day does not re-read Mbin every tick. The weeks that
+// succeeded are remembered only in memory: after a restart, the claims in the
+// store keep a rerun from mailing anyone twice.
 func Loop(ctx context.Context, r *Runner, now func() time.Time, tick time.Duration) {
 	done := map[string]bool{}
-	t := time.NewTicker(tick)
+	backoff := tick
+	t := time.NewTimer(tick)
 	defer t.Stop()
 	for {
+		wait := tick
 		if week, ok := Due(now()); ok {
 			k := week.Format("2006-01-02")
 			if !done[k] {
 				if err := r.Week(ctx, week); err != nil {
-					slog.Error("digest run failed; it is retried on the next tick until the day ends", "error", err)
+					slog.Error("digest run failed; it is retried until the day ends", "error", err, "retry_in", backoff.String())
+					wait = backoff
+					backoff = min(2*backoff, maxBackoff)
 				} else {
 					done[k] = true
+					backoff = tick
 				}
 			}
 		}
+		t.Reset(wait)
 		select {
 		case <-ctx.Done():
 			return

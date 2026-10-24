@@ -25,3 +25,11 @@ func (r *Recorder) Send(_ context.Context, m mail.Message) error {
 	r.Messages = append(r.Messages, m)
 	return nil
 }
+
+// Sent is a copy of the messages recorded so far, safe to read while another
+// goroutine sends.
+func (r *Recorder) Sent() []mail.Message {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return append([]mail.Message(nil), r.Messages...)
+}
