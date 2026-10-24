@@ -9,7 +9,7 @@ paisans-engagement-service sends the community's weekly digest email, a small Go
 
 A send is recorded per member per week in the service's own database before the next member starts, so a restart, a retry or a second copy never mails anyone twice. A digest the mail relay never accepted, because the relay was down or refused the sender or the recipient, is retried the same day, with the wait between attempts doubling up to 15 minutes, and an unreachable relay stops the run until the next attempt rather than being tried once per member. A send the relay refused after the message was handed over is recorded as failed and is not retried, since it may have been delivered.
 
-The only public route is `/u/{token}`; the gateway forwards nothing else. `/healthz` answers on the listen address for the container's own health check. Without `ENGAGEMENT_SMTP_HOST` the service logs that no digest is sent and starts no schedule, and the unsubscribe route still answers.
+The only public route is `/u/{token}`; the gateway also forwards `GET /healthz`, for the monitor's public check, and nothing else. `/healthz` answers on the listen address for the container's own health check too. Without `ENGAGEMENT_SMTP_HOST` the service logs that no digest is sent and starts no schedule, and the unsubscribe route still answers.
 
 ## Mbin must be clustered
 
