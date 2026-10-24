@@ -137,16 +137,12 @@ func TestVisitedSubscribedRanksLower(t *testing.T) {
 }
 
 func TestFederatedHalfWeight(t *testing.T) {
-	// federated 30 * 1.5 * 0.5 = 22.5 beats 20 in the list order
-	items := []Item{entry(1, 1, 20, 0, 0), fed(2, 7, 30, 0, 0), entry(3, 1, 0, 0, 0)}
+	// Subscribed federated 30 weighs 30*1.5*0.5 = 22.5 halved, 45 unhalved;
+	// the local 25 sits between the two.
+	items := []Item{entry(1, 1, 100, 0, 0), entry(2, 1, 25, 0, 0), fed(3, 7, 30, 0, 0)}
 	d, _ := Build(items, View{Subscribed: map[int64]bool{7: true}}, Stats{})
-	if !eq(keys(d.More), []int64{2, 3}) || d.Featured.Item.Key.ID != 1 {
-		t.Fatalf("got %v %d", keys(d.More), d.Featured.Item.Key.ID)
-	}
-	items[1].Score = 20 // 15 < 20 and > 0
-	d, _ = Build(items, View{Subscribed: map[int64]bool{7: true}}, Stats{})
-	if !eq(keys(d.More), []int64{2, 3}) {
-		t.Fatalf("got %v", keys(d.More))
+	if d.Featured.Item.Key.ID != 1 || !eq(keys(d.More), []int64{2, 3}) {
+		t.Fatalf("got %d %v", d.Featured.Item.Key.ID, keys(d.More))
 	}
 }
 
