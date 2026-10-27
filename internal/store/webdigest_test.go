@@ -61,7 +61,7 @@ func TestWebDigestExpires(t *testing.T) {
 		t.Fatalf("day 27: %v, %v", ok, err)
 	}
 	sameJSON(t, got, `{"n":1}`)
-	if _, ok, err := s.WebDigest(ctx, "sub-1", day, monday.Add(store.DigestLifetime)); err != nil || ok {
+	if _, ok, err := s.WebDigest(ctx, "sub-1", day, store.DigestExpiry(monday)); err != nil || ok {
 		t.Fatalf("day 28: %v, %v", ok, err)
 	}
 	if _, ok, err := s.WebDigest(ctx, "sub-1", "2026-10-19", monday); err != nil || ok {
@@ -70,7 +70,7 @@ func TestWebDigestExpires(t *testing.T) {
 	if n, err := s.PurgeDigests(ctx, monday.Add(27*24*time.Hour)); err != nil || n != 0 {
 		t.Fatalf("early purge: %d, %v", n, err)
 	}
-	if n, err := s.PurgeDigests(ctx, monday.Add(store.DigestLifetime)); err != nil || n != 1 {
+	if n, err := s.PurgeDigests(ctx, store.DigestExpiry(monday)); err != nil || n != 1 {
 		t.Fatalf("purge: %d, %v", n, err)
 	}
 	if _, ok, err := s.SavedDigest(ctx, "sub-1", monday); err != nil || ok {
@@ -100,4 +100,36 @@ func TestDigestsForWeek(t *testing.T) {
 	}
 	sameJSON(t, got["sub-1"], `{"n":1}`)
 	sameJSON(t, got["sub-2"], `{"n":2}`)
+}
+
+// A date that is not a date finds no digest; it is not a store error.
+func TestWebDigestMalformedDate(t *testing.T) {
+	s := storetest.New(t)
+	for _, d := range []string{"2026-13-45", "not a date", ""} {
+		if got, ok, err := s.WebDigest(context.Background(), "sub-1", d, monday); err != nil || ok || got != nil {
+			t.Errorf("%q: %q %v %v", d, got, ok, err)
+		}
+	}
+}
+
+// Expiry is 28 calendar days on, at the same wall clock time across a change
+// of daylight saving time.
+func TestDigestExpiryKeepsWallClock(t *testing.T) {
+	berlin, err := time.LoadLocation("Europe/Berlin")
+	if err != nil {
+		t.Fatal(err)
+	}
+	week := time.Date(2026, 3, 23, 8, 0, 0, 0, berlin)
+	s := storetest.New(t)
+	ctx := context.Background()
+	if _, err := s.SaveDigest(ctx, "sub-1", week, []byte(`{}`)); err != nil {
+		t.Fatal(err)
+	}
+	var exp time.Time
+	if err := storetest.Conn(t, s).QueryRow(ctx, `SELECT expires_at FROM web_digests`).Scan(&exp); err != nil {
+		t.Fatal(err)
+	}
+	if want := time.Date(2026, 4, 20, 8, 0, 0, 0, berlin); !exp.Equal(want) {
+		t.Fatalf("expires %v, want %v", exp.In(berlin), want)
+	}
 }

@@ -104,7 +104,7 @@ func serve() error {
 		select {
 		case <-stopped:
 		case <-time.After(10 * time.Second):
-			slog.Warn("the digest run did not stop in time; a member may stay pending this week")
+			slog.Warn("the digest run or the Digest Bot did not stop in time; a member may stay pending this week")
 		}
 	}()
 
@@ -138,7 +138,7 @@ func serve() error {
 		}
 		var wg sync.WaitGroup
 		if matrixOn {
-			h := &bot.Holder{}
+			h := bot.NewHolder()
 			runner.Matrix = dmFrom(h)
 			runner.MatrixConfigured = true
 			runner.MatrixPending = h.Pending

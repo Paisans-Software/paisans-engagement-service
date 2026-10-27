@@ -19,6 +19,15 @@ type Holder struct {
 	pending atomic.Bool
 }
 
+// NewHolder returns a Holder that is pending from the start, for a copy that
+// is about to supervise a bot: a run that starts before Supervise does waits
+// for the bot rather than skipping it. A zero Holder is not pending.
+func NewHolder() *Holder {
+	h := &Holder{}
+	h.pending.Store(true)
+	return h
+}
+
 // Get returns the running bot, or nil when this copy is not running one.
 func (h *Holder) Get() *Bot { return h.bot.Load() }
 

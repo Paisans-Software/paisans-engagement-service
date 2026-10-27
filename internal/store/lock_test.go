@@ -5,13 +5,14 @@ import (
 	"testing"
 	"time"
 
+	"github.com/paisans-software/paisans-engagement-service/internal/store"
 	"github.com/paisans-software/paisans-engagement-service/internal/store/storetest"
 )
 
 // lockKeySQL computes the key the store takes for the bot lock in this test's schema.
-const lockKeySQL = `SELECT $1::bigint # hashtextextended(current_schema(), 0)`
+const lockKeySQL = `SELECT ` + store.BotLockKeySQL
 
-const testBotLock = 0x656e676167650002
+const testBotLock = store.BotLockID
 
 func TestBotLockExclusive(t *testing.T) {
 	s := storetest.New(t)
@@ -42,6 +43,7 @@ func TestBotLockExclusive(t *testing.T) {
 
 func TestBotLockLost(t *testing.T) {
 	s := storetest.New(t)
+	s.SetLockPing(20 * time.Millisecond)
 	ctx := context.Background()
 	l, ok, err := s.TryBotLock(ctx)
 	if err != nil || !ok {
@@ -62,7 +64,31 @@ func TestBotLockLost(t *testing.T) {
 	}
 	select {
 	case <-l.Lost():
-	case <-time.After(20 * time.Second):
+	case <-time.After(5 * time.Second):
 		t.Fatal("Lost was not closed")
+	}
+}
+
+// Release returns at once even while a ping is waiting on the connection.
+func TestBotLockReleaseCutsPing(t *testing.T) {
+	s := storetest.New(t)
+	s.SetLockPing(time.Millisecond)
+	ctx := context.Background()
+	for i := 0; i < 20; i++ {
+		l, ok, err := s.TryBotLock(ctx)
+		if err != nil || !ok {
+			t.Fatalf("attempt %d: ok=%v err=%v", i, ok, err)
+		}
+		time.Sleep(time.Duration(i%3) * time.Millisecond)
+		start := time.Now()
+		l.Release()
+		if d := time.Since(start); d > 2*time.Second {
+			t.Fatalf("Release took %v", d)
+		}
+		select {
+		case <-l.Lost():
+			t.Fatal("Release reported the lock lost")
+		default:
+		}
 	}
 }

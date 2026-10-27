@@ -11,6 +11,7 @@ import (
 
 	"github.com/paisans-software/paisans-engagement-service/internal/mas"
 	"github.com/paisans-software/paisans-engagement-service/internal/matrix"
+	"github.com/paisans-software/paisans-engagement-service/internal/store"
 	"github.com/paisans-software/paisans-engagement-service/internal/store/storetest"
 )
 
@@ -159,6 +160,7 @@ func TestSuperviseRetriesUnavailable(t *testing.T) {
 
 func TestSuperviseLockLossClearsAndRecovers(t *testing.T) {
 	e := newEnv(t)
+	e.st.SetLockPing(20 * time.Millisecond)
 	var h Holder
 	supervise(t, e.deps(), &h)
 	eventually(t, "the bot", func() bool { return h.Get() != nil })
@@ -166,7 +168,7 @@ func TestSuperviseLockLossClearsAndRecovers(t *testing.T) {
 	// End the session holding this schema's bot lock, and no other.
 	ctx := context.Background()
 	var key int64
-	if err := c.QueryRow(ctx, `SELECT $1::bigint # hashtextextended(current_schema(), 0)`, int64(0x656e676167650002)).Scan(&key); err != nil {
+	if err := c.QueryRow(ctx, `SELECT `+store.BotLockKeySQL, int64(store.BotLockID)).Scan(&key); err != nil {
 		t.Fatal(err)
 	}
 	var terminated bool
@@ -175,9 +177,9 @@ func TestSuperviseLockLossClearsAndRecovers(t *testing.T) {
 		AND ((classid::bigint << 32) | objid::bigint) = $1`, key).Scan(&terminated); err != nil || !terminated {
 		t.Fatalf("terminate: %v %v", terminated, err)
 	}
-	// The ping runs every 15s, so the loss is noticed late; the bot is
-	// back afterwards. Until the next attempt the run must keep waiting.
-	eventuallyWithin(t, 40*time.Second, "the loss to clear the holder", func() bool { return h.Get() == nil })
+	// The loss is noticed at the next ping and the bot is back afterwards.
+	// Until then the run must keep waiting.
+	eventuallyWithin(t, 5*time.Second, "the loss to clear the holder", func() bool { return h.Get() == nil })
 	if !h.Pending() {
 		t.Error("Pending false after the loss")
 	}
@@ -194,5 +196,14 @@ func TestHolderZero(t *testing.T) {
 	var h Holder
 	if h.Get() != nil || h.Pending() {
 		t.Error("zero Holder is not idle")
+	}
+}
+
+// A new Holder is pending before Supervise has run at all, so a run that
+// starts first waits for the bot rather than skipping it.
+func TestNewHolderPending(t *testing.T) {
+	h := NewHolder()
+	if h.Get() != nil || !h.Pending() {
+		t.Errorf("Get=%v Pending=%v", h.Get(), h.Pending())
 	}
 }

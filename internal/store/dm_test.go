@@ -103,3 +103,37 @@ func TestReleaseDMOnlyPending(t *testing.T) {
 		t.Fatalf("a sent row was released: %v, %v", ok, err)
 	}
 }
+
+// A pending claim older than 15 minutes is one whose sender stopped before
+// finishing it; it is claimed again, and its time reset.
+func TestClaimDMReclaimsStalePending(t *testing.T) {
+	s := storetest.New(t)
+	ctx := context.Background()
+	c := storetest.Conn(t, s)
+	for _, sub := range []string{"stale", "fresh", "sent"} {
+		if _, err := s.ClaimDM(ctx, sub, monday); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := s.FinishDM(ctx, "sent", monday, store.StatusSent); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := c.Exec(ctx, `UPDATE dm_sends SET at = now() - interval '16 minutes' WHERE subject IN ('stale', 'sent')`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := c.Exec(ctx, `UPDATE dm_sends SET at = now() - interval '5 minutes' WHERE subject = 'fresh'`); err != nil {
+		t.Fatal(err)
+	}
+	for sub, want := range map[string]bool{"stale": true, "fresh": false, "sent": false} {
+		if ok, err := s.ClaimDM(ctx, sub, monday); err != nil || ok != want {
+			t.Errorf("%s: claimed %v (%v), want %v", sub, ok, err, want)
+		}
+	}
+	var recent bool
+	if err := c.QueryRow(ctx, `SELECT at > now() - interval '1 minute' FROM dm_sends WHERE subject = 'stale'`).Scan(&recent); err != nil || !recent {
+		t.Fatalf("reclaimed row's time not reset: %v %v", recent, err)
+	}
+	if ok, err := s.ClaimDM(ctx, "stale", monday); err != nil || ok {
+		t.Fatalf("a fresh reclaim was claimed again: %v %v", ok, err)
+	}
+}

@@ -8,18 +8,18 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
-// DigestLifetime is how long a sent digest stays readable on the web, counted
-// from its send time.
-const DigestLifetime = 28 * 24 * time.Hour
+// DigestExpiry is when the digest of the week sent at week stops being
+// readable on the web: 28 days on, at the same wall clock time.
+func DigestExpiry(week time.Time) time.Time { return week.AddDate(0, 0, 28) }
 
 // SaveDigest stores content as the member's digest for the week unless one is
-// already stored, and returns whichever is stored. The digest expires
-// DigestLifetime after week.
+// already stored, and returns whichever is stored. The digest expires at
+// DigestExpiry(week).
 func (s *Store) SaveDigest(ctx context.Context, subject string, week time.Time, content []byte) ([]byte, error) {
 	if _, err := s.pool.Exec(ctx,
 		`INSERT INTO web_digests (subject, week, content, expires_at) VALUES ($1, $2::date, $3, $4)
 		ON CONFLICT (subject, week) DO NOTHING`,
-		subject, weekDate(week), content, week.Add(DigestLifetime)); err != nil {
+		subject, weekDate(week), content, DigestExpiry(week)); err != nil {
 		return nil, err
 	}
 	var got []byte
@@ -57,8 +57,11 @@ func (s *Store) DigestsForWeek(ctx context.Context, week time.Time) (map[string]
 }
 
 // WebDigest is the stored digest for the week (YYYY-MM-DD) only while now is
-// before its expiry.
+// before its expiry. A weekDate that is not a date finds nothing.
 func (s *Store) WebDigest(ctx context.Context, subject, weekDate string, now time.Time) ([]byte, bool, error) {
+	if _, err := time.Parse(time.DateOnly, weekDate); err != nil {
+		return nil, false, nil
+	}
 	var got []byte
 	err := s.pool.QueryRow(ctx,
 		`SELECT content FROM web_digests WHERE subject=$1 AND week=$2::date AND expires_at > $3`,

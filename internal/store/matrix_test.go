@@ -32,14 +32,8 @@ func TestMatrixAccountAndRoom(t *testing.T) {
 	if got, ok, err := s.MatrixMemberByRoom(ctx, "!r:example.org"); err != nil || !ok || got != want {
 		t.Fatalf("by room: %+v %v %v", got, ok, err)
 	}
-	if got, ok, err := s.MatrixMemberByUser(ctx, "@one:example.org"); err != nil || !ok || got != want {
-		t.Fatalf("by user: %+v %v %v", got, ok, err)
-	}
 	if _, ok, err := s.MatrixMemberByRoom(ctx, "!other"); err != nil || ok {
 		t.Fatalf("unknown room: %v %v", ok, err)
-	}
-	if _, ok, err := s.MatrixMemberByUser(ctx, "@other:example.org"); err != nil || ok {
-		t.Fatalf("unknown user: %v %v", ok, err)
 	}
 }
 
@@ -109,6 +103,20 @@ func TestLeftMatrix(t *testing.T) {
 	}
 	if m.Enabled || m.RoomID != "" {
 		t.Fatalf("got %+v", m)
+	}
+	// Leaving a room that is no longer theirs turns the digest off and
+	// keeps the current room.
+	if err := s.SetMatrixEnabled(ctx, "sub-1", true); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.SetMatrixRoom(ctx, "sub-1", "!b"); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.LeftMatrix(ctx, "sub-1", "!a"); err != nil {
+		t.Fatal(err)
+	}
+	if m, err = s.MatrixMember(ctx, "sub-1"); err != nil || m.Enabled || m.RoomID != "!b" {
+		t.Fatalf("got %+v %v", m, err)
 	}
 }
 

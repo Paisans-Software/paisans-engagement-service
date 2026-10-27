@@ -1,12 +1,13 @@
 package main
 
 import (
-	"github.com/paisans-software/paisans-engagement-service/internal/bot"
 	"net"
 	"net/http"
 	"net/http/httptest"
 	"sync/atomic"
 	"testing"
+
+	"github.com/paisans-software/paisans-engagement-service/internal/bot"
 )
 
 // healthcheck probes 127.0.0.1 on the listen address's port, whatever host

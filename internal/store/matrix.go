@@ -35,6 +35,8 @@ func (s *Store) MatrixMember(ctx context.Context, subject string) (MatrixMember,
 	return m, err
 }
 
+// matrixBy is the member whose column equals value. column is a literal
+// column name from this file, never input.
 func (s *Store) matrixBy(ctx context.Context, column, value string) (MatrixMember, bool, error) {
 	m, err := scanMatrix(s.pool.QueryRow(ctx, `SELECT `+matrixColumns+` FROM matrix_members WHERE `+column+`=$1`, value))
 	if errors.Is(err, pgx.ErrNoRows) {
@@ -46,11 +48,6 @@ func (s *Store) matrixBy(ctx context.Context, column, value string) (MatrixMembe
 // MatrixMemberByRoom is the member whose current room is roomID.
 func (s *Store) MatrixMemberByRoom(ctx context.Context, roomID string) (MatrixMember, bool, error) {
 	return s.matrixBy(ctx, "room_id", roomID)
-}
-
-// MatrixMemberByUser is the member whose Matrix id is userID.
-func (s *Store) MatrixMemberByUser(ctx context.Context, userID string) (MatrixMember, bool, error) {
-	return s.matrixBy(ctx, "user_id", userID)
 }
 
 // SetMatrixAccount records the member's MAS user id and Matrix id. Empty
@@ -108,7 +105,7 @@ func (s *Store) LeftMatrix(ctx context.Context, subject, roomID string) error {
 		return err
 	}
 	if _, err := tx.Exec(ctx,
-		`UPDATE matrix_members SET room_id=NULL WHERE subject=$1 AND room_id=$2`,
+		`UPDATE matrix_members SET room_id=NULL, at=now() WHERE subject=$1 AND room_id=$2`,
 		subject, roomID); err != nil {
 		return err
 	}
@@ -141,6 +138,7 @@ func (s *Store) BotState(ctx context.Context, key string) (string, bool, error) 
 	return v, err == nil, err
 }
 
+// SetBotState keeps value under key, replacing any value there.
 func (s *Store) SetBotState(ctx context.Context, key, value string) error {
 	_, err := s.pool.Exec(ctx,
 		`INSERT INTO bot_state (key, value) VALUES ($1, $2) ON CONFLICT (key) DO UPDATE SET value=$2`,
@@ -148,6 +146,7 @@ func (s *Store) SetBotState(ctx context.Context, key, value string) error {
 	return err
 }
 
+// DeleteBotState removes key and its value; a missing key is not an error.
 func (s *Store) DeleteBotState(ctx context.Context, key string) error {
 	_, err := s.pool.Exec(ctx, `DELETE FROM bot_state WHERE key=$1`, key)
 	return err
