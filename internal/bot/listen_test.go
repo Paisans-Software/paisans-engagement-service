@@ -1,0 +1,301 @@
+package bot
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"strings"
+	"testing"
+	"time"
+)
+
+func TestCommandParsing(t *testing.T) {
+	for in, want := range map[string]string{
+		"stop": "stop", "STOP!": "stop", "  Start. ": "start", "\"resume\"": "start", "Restore": "start",
+		"stop please": "", "🛑": "", "": "", "start?!stop": "",
+	} {
+		if got := Command(in); got != want {
+			t.Errorf("Command(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
+type checker map[string]bool
+
+func (c checker) IsMember(_ context.Context, subject string) (bool, error) { return c[subject], nil }
+
+// message is one m.room.message timeline event.
+func message(id, sender, msgtype, body string) string {
+	c, _ := json.Marshal(map[string]string{"msgtype": msgtype, "body": body})
+	return fmt.Sprintf(`{"type":"m.room.message","event_id":%q,"sender":%q,"content":%s}`, id, sender, c)
+}
+
+func memberEvent(id, sender, key, membership string) string {
+	return fmt.Sprintf(`{"type":"m.room.member","event_id":%q,"sender":%q,"state_key":%q,"content":{"membership":%q}}`,
+		id, sender, key, membership)
+}
+
+func joined(room string, events ...string) string {
+	return fmt.Sprintf(`{"rooms":{"join":{%q:{"timeline":{"events":[%s]}}}}}`, room, strings.Join(events, ","))
+}
+
+func invited(room, inviter string) string {
+	return fmt.Sprintf(`{"rooms":{"invite":{%q:{"invite_state":{"events":[`+
+		`{"type":"m.room.create","sender":%q,"state_key":"","content":{}},`+
+		`{"type":"m.room.member","sender":%q,"state_key":%q,"content":{"membership":"invite"}}]}}}}}`,
+		room, inviter, inviter, botUser)
+}
+
+// memberRoom starts a bot for a linked member with a room the fake knows.
+func memberRoom(t *testing.T) (*env, *Bot, string) {
+	t.Helper()
+	e, b := started(t)
+	b.members = checker{"sub-1": true}
+	ctx := context.Background()
+	id := link(e, "sub-1", "one")
+	room := "!dm:example.org"
+	e.syn.AddRoom(room)
+	for _, err := range []error{
+		e.st.SetMatrixAccount(ctx, "sub-1", id, "@one:example.org"),
+		e.st.SetMatrixRoom(ctx, "sub-1", room),
+	} {
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	return e, b, room
+}
+
+// run feeds the queued batches to a fresh Listen and returns once they are handled.
+func run(t *testing.T, e *env, b *Bot, batches int) {
+	t.Helper()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan error, 1)
+	go func() { done <- b.Listen(ctx) }()
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		if len(e.syn.SyncSince()) > batches {
+			break // the call after the last batch means the last one was handled
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("sync queue never drained")
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	cancel()
+	if err := <-done; err == nil {
+		t.Fatal("Listen returned nil")
+	}
+}
+
+func syncOf(e *env, _ *Bot, batches ...[2]string) {
+	for _, q := range batches {
+		e.syn.QueueSync(q[0], q[1])
+	}
+}
+
+func prime(t *testing.T, e *env) {
+	t.Helper()
+	if err := e.st.SetBotState(context.Background(), keySyncToken, "start"); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func enabled(t *testing.T, e *env) bool {
+	t.Helper()
+	m, err := e.st.MatrixMember(context.Background(), "sub-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	return m.Enabled
+}
+
+func TestStopAndStart(t *testing.T) {
+	e, b, room := memberRoom(t)
+	prime(t, e)
+	syncOf(e, b,
+		[2]string{"b1", joined(room, message("$1", "@one:example.org", "m.text", "STOP"))},
+		[2]string{"b2", joined(room, message("$2", "@one:example.org", "m.text", "stop"))},
+		[2]string{"b3", joined(room, message("$3", "@one:example.org", "m.text", "start"))})
+	run(t, e, b, 3)
+	sends := e.syn.Sends()
+	if len(sends) != 3 || !enabled(t, e) {
+		t.Fatalf("sends=%d enabled=%v", len(sends), enabled(t, e))
+	}
+	for i, want := range []string{ReplyStopped, ReplyStopped, ReplyStarted} {
+		if sends[i].Room != room || sends[i].Content["body"] != want || sends[i].Content["msgtype"] != "m.notice" {
+			t.Errorf("send %d = %+v", i, sends[i])
+		}
+	}
+	if !strings.HasPrefix(sends[0].TxnID, "reply-") || len(sends[0].TxnID) != len("reply-")+16 {
+		t.Errorf("txn = %q", sends[0].TxnID)
+	}
+}
+
+func TestStopSticks(t *testing.T) {
+	e, b, room := memberRoom(t)
+	prime(t, e)
+	syncOf(e, b, [2]string{"b1", joined(room, message("$1", "@one:example.org", "m.text", "STOP"))})
+	run(t, e, b, 1)
+	if enabled(t, e) {
+		t.Fatal("still on")
+	}
+}
+
+func TestHelpReply(t *testing.T) {
+	e, b, room := memberRoom(t)
+	prime(t, e)
+	syncOf(e, b, [2]string{"b1", joined(room, message("$1", "@one:example.org", "m.text", "hello"))})
+	run(t, e, b, 1)
+	s := e.syn.Sends()
+	if len(s) != 1 || s[0].Content["body"] != ReplyHelp || !enabled(t, e) {
+		t.Fatalf("sends = %+v", s)
+	}
+}
+
+func TestIgnoresNoticesSelfAndStrangers(t *testing.T) {
+	e, b, room := memberRoom(t)
+	prime(t, e)
+	syncOf(e, b,
+		[2]string{"b1", joined(room,
+			message("$1", "@one:example.org", "m.notice", "stop"),
+			message("$2", botUser, "m.notice", "stop"),
+			message("$3", botUser, "m.text", "stop"),
+			message("$4", "@two:example.org", "m.text", "stop"))},
+		[2]string{"b2", joined("!other:example.org", message("$5", "@one:example.org", "m.text", "stop"))})
+	run(t, e, b, 2)
+	if n := len(e.syn.Sends()); n != 0 || !enabled(t, e) {
+		t.Fatalf("sends=%d enabled=%v", n, enabled(t, e))
+	}
+}
+
+func TestLeaveCountsAsStop(t *testing.T) {
+	e, b, room := memberRoom(t)
+	prime(t, e)
+	syncOf(e, b, [2]string{"b1", joined(room, memberEvent("$1", "@one:example.org", "@one:example.org", "leave"))})
+	run(t, e, b, 1)
+	ctx := context.Background()
+	m, _ := e.st.MatrixMember(ctx, "sub-1")
+	if m.Enabled || m.RoomID != "" {
+		t.Fatalf("member = %+v", m)
+	}
+	var left bool
+	for _, r := range e.syn.Rooms() {
+		if r.ID == room {
+			left = r.Left && r.Forgotten
+		}
+	}
+	if !left || len(e.syn.Sends()) != 0 {
+		t.Fatalf("left=%v sends=%d", left, len(e.syn.Sends()))
+	}
+	if _, ok, err := b.Prepare(ctx, "sub-1"); ok || err != nil {
+		t.Fatal(ok, err)
+	}
+	if len(e.syn.Rooms()) != 1 {
+		t.Fatalf("rooms = %d", len(e.syn.Rooms()))
+	}
+}
+
+func TestBotLeavingForgetsRoom(t *testing.T) {
+	e, b, room := memberRoom(t)
+	prime(t, e)
+	syncOf(e, b, [2]string{"b1", fmt.Sprintf(`{"rooms":{"leave":{%q:{"timeline":{"events":[]}}}}}`, room)})
+	run(t, e, b, 1)
+	m, _ := e.st.MatrixMember(context.Background(), "sub-1")
+	if m.RoomID != "" || !m.Enabled {
+		t.Fatalf("member = %+v", m)
+	}
+}
+
+func TestInviteFromMember(t *testing.T) {
+	e, b, old := memberRoom(t)
+	prime(t, e)
+	e.syn.AddRoom("!invite:example.org")
+	syncOf(e, b, [2]string{"b1", invited("!invite:example.org", "@one:example.org")})
+	if err := e.st.SetMatrixEnabled(context.Background(), "sub-1", false); err != nil {
+		t.Fatal(err)
+	}
+	run(t, e, b, 1)
+	var fresh []string
+	for _, r := range e.syn.Rooms() {
+		switch r.ID {
+		case "!invite:example.org":
+			if !r.Left {
+				t.Error("invite room not left")
+			}
+		case old:
+			if !r.Left || !r.Forgotten {
+				t.Error("old room kept")
+			}
+		default:
+			fresh = append(fresh, r.ID)
+			if r.Request["is_direct"] != true || r.Request["preset"] != "private_chat" {
+				t.Errorf("request = %v", r.Request)
+			}
+		}
+	}
+	m, _ := e.st.MatrixMember(context.Background(), "sub-1")
+	if len(fresh) != 1 || m.RoomID != fresh[0] || !m.Enabled || m.UserID != "@one:example.org" {
+		t.Fatalf("fresh=%v member=%+v", fresh, m)
+	}
+	s := e.syn.Sends()
+	if len(s) != 1 || s[0].Room != fresh[0] || s[0].Content["body"] != ReplyStarted {
+		t.Fatalf("sends = %+v", s)
+	}
+}
+
+func TestForeignInvite(t *testing.T) {
+	e, b, _ := memberRoom(t)
+	prime(t, e)
+	link(e, "sub-2", "nolink")
+	e.mas.AddUser("unlinked", e.mas.Users()[0].CreatedAt)
+	for _, r := range []string{"!a:remote.org", "!b:example.org", "!c:example.org", "!d:example.org"} {
+		e.syn.AddRoom(r)
+	}
+	syncOf(e, b,
+		[2]string{"b1", invited("!a:remote.org", "@x:remote.org")},
+		[2]string{"b2", invited("!b:example.org", "@unlinked:example.org")},
+		[2]string{"b3", invited("!c:example.org", "@nobody:example.org")},
+		[2]string{"b4", invited("!d:example.org", "@nolink:example.org")}) // linked, but not a member
+	run(t, e, b, 4)
+	for _, r := range e.syn.Rooms() {
+		if r.ID != "!dm:example.org" && !r.Left {
+			t.Errorf("%s not left", r.ID)
+		}
+	}
+	if len(e.syn.Rooms()) != 5 || len(e.syn.Sends()) != 0 {
+		t.Fatalf("rooms=%d sends=%d", len(e.syn.Rooms()), len(e.syn.Sends()))
+	}
+}
+
+func TestSyncTokenStored(t *testing.T) {
+	e, b := started(t)
+	syncOf(e, b, [2]string{"b1", `{}`}, [2]string{"b2", `{}`})
+	run(t, e, b, 2)
+	if got := e.syn.SyncSince(); len(got) < 3 || got[0] != "" || got[1] != "b1" || got[2] != "b2" {
+		t.Fatalf("since = %q", got)
+	}
+	if e.state(t, keySyncToken) != "b2" {
+		t.Fatalf("token = %q", e.state(t, keySyncToken))
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
+	defer cancel()
+	n := len(e.syn.SyncSince())
+	_ = b.Listen(ctx)
+	if got := e.syn.SyncSince(); got[n] != "b2" {
+		t.Fatalf("fresh Listen started from %q", got[n])
+	}
+}
+
+func TestInitialSyncIgnoresTimeline(t *testing.T) {
+	e, b, room := memberRoom(t)
+	syncOf(e, b, [2]string{"b1", joined(room, message("$1", "@one:example.org", "m.text", "stop"))})
+	run(t, e, b, 1)
+	if len(e.syn.Sends()) != 0 || !enabled(t, e) {
+		t.Fatal("initial timeline was handled")
+	}
+	if e.state(t, keySyncToken) != "b1" {
+		t.Fatal("token not stored")
+	}
+}

@@ -432,3 +432,11 @@ func (s *Server) sync(w http.ResponseWriter, r *http.Request) {
 	}
 	s.writeJSON(w, map[string]any{"next_batch": r.URL.Query().Get("since")})
 }
+
+// AddRoom makes the fake know a room it did not create, such as one the bot
+// was invited to, so that leaving and forgetting it succeed.
+func (s *Server) AddRoom(id string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.rooms = append(s.rooms, &Room{ID: id})
+}
