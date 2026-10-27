@@ -45,6 +45,7 @@ type Server struct {
 	sessions  []SessionRec
 	revoked   map[string]bool
 	lastQuery string
+	lookups   int
 }
 
 // New starts a fake MAS that is closed when the test ends.
@@ -127,6 +128,13 @@ func (s *Server) LastQuery() string {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.lastQuery
+}
+
+// LinkLookups counts the upstream-oauth-links requests that filter by subject.
+func (s *Server) LinkLookups() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.lookups
 }
 
 // RevokeSession makes regenerate refuse the session.
@@ -218,6 +226,9 @@ func (s *Server) handleAdmin(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, 200, map[string]any{"version": s.VersionString})
 	case path == "upstream-oauth-links" && r.Method == http.MethodGet:
 		s.lastQuery = r.URL.RawQuery
+		if r.URL.Query().Get("filter[subject]") != "" {
+			s.lookups++
+		}
 		s.listLinks(w, r.URL.Query())
 	case strings.HasPrefix(path, "users/by-username/") && r.Method == http.MethodGet:
 		name, _ := url.PathUnescape(strings.TrimPrefix(path, "users/by-username/"))
