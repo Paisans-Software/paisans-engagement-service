@@ -5,6 +5,8 @@ All notable changes to this project are documented here, in the
 
 ## [Unreleased]
 
+## [0.1.1] - 2026-10-27
+
 ### Added
 
 - A `send` command that sends this week's digest now, to everyone or with `--member` to one member, skipping whoever the week already reached.
