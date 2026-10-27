@@ -145,9 +145,9 @@ func TestUsers(t *testing.T) {
 		t.Fatalf("User = %+v %v %v", u, ok, err)
 	}
 	s.Deactivate(id)
-	u, _, _ = c.UserByUsername(ctx, "dave")
-	if !u.Deactivated {
-		t.Fatal("expected deactivated")
+	u, ok, err = c.UserByUsername(ctx, "dave")
+	if err != nil || !ok || !u.Deactivated {
+		t.Fatalf("deactivated = %+v %v %v", u, ok, err)
 	}
 	if _, ok, err := c.User(ctx, "missing"); err != nil || ok {
 		t.Fatalf("missing = %v %v", ok, err)
@@ -214,10 +214,15 @@ func TestUnavailableHidesSecret(t *testing.T) {
 	if !errors.Is(err, mas.ErrUnavailable) {
 		t.Fatalf("err = %v, want ErrUnavailable", err)
 	}
-	s.ExpireTokens()
-	_, err2 := c.Version(ctx) // token endpoint down too
+	// A client with no token yet meets the token endpoint's 503.
+	fresh := mas.New(s.URL, s.ClientID, s.Secret, nil)
+	fresh.SetTokenEndpoint(s.TokenURL())
+	_, err2 := fresh.Version(ctx)
 	if !errors.Is(err2, mas.ErrUnavailable) {
 		t.Fatalf("err2 = %v", err2)
+	}
+	if n := s.TokenRequests(); n != 1 {
+		t.Fatalf("TokenRequests = %d", n)
 	}
 	for _, e := range []error{err, err2} {
 		for _, bad := range []string{s.Secret, "secret-subject", "mas_tok_"} {
@@ -248,5 +253,47 @@ func TestNetworkErrorIsUnavailable(t *testing.T) {
 	c.SetTokenEndpoint("http://127.0.0.1:1/oauth2/token")
 	if _, err := c.Version(context.Background()); !errors.Is(err, mas.ErrUnavailable) {
 		t.Fatalf("err = %v", err)
+	}
+}
+
+// A token refused twice running is the admin API's answer, not an outage,
+// and is not asked for a third time.
+func TestSecondUnauthorized(t *testing.T) {
+	c, s := newClient(t)
+	s.RefuseAdmin.Store(true)
+	_, err := c.Version(context.Background())
+	if err == nil || errors.Is(err, mas.ErrUnavailable) || !strings.Contains(err.Error(), "401") {
+		t.Fatalf("err = %v", err)
+	}
+	if n := s.TokenRequests(); n != 2 {
+		t.Fatalf("TokenRequests = %d, want 2", n)
+	}
+}
+
+// MAS answers 404 for a provider it does not know; no member is linked there.
+func TestUnknownProvider(t *testing.T) {
+	c, s := newClient(t)
+	s.Link("prov1", "sub-1", s.AddUser("alice", time.Now()))
+	if id, ok, err := c.LinkedUserID(context.Background(), "unknown", "sub-1"); err != nil || ok || id != "" {
+		t.Fatalf("LinkedUserID = %q %v %v", id, ok, err)
+	}
+	if sub, ok, err := c.LinkedSubject(context.Background(), "unknown", "01X"); err != nil || ok || sub != "" {
+		t.Fatalf("LinkedSubject = %q %v %v", sub, ok, err)
+	}
+}
+
+// A token that comes without a lifetime is still kept a while.
+func TestTokenWithoutLifetimeCached(t *testing.T) {
+	s := mastest.New(t)
+	s.TokenLifetime = -1
+	c := mas.New(s.URL, s.ClientID, s.Secret, nil)
+	c.SetTokenEndpoint(s.TokenURL())
+	for i := 0; i < 3; i++ {
+		if _, err := c.Version(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if n := s.TokenRequests(); n != 1 {
+		t.Fatalf("TokenRequests = %d, want 1", n)
 	}
 }

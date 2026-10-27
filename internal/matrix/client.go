@@ -92,6 +92,8 @@ type Client struct {
 
 	// sleep waits out a 429; tests replace it.
 	sleep func(ctx context.Context, d time.Duration) error
+	// maxBody is the largest answer read; tests lower it.
+	maxBody int64
 }
 
 // New returns a client for the homeserver at baseURL. A nil hc gets a client
@@ -106,7 +108,18 @@ func New(baseURL string, hc *http.Client, p Pacing) *Client {
 		messages: rate.NewLimiter(rate.Limit(p.MessagesPerSecond), p.MessageBurst),
 		rooms:    rate.NewLimiter(rate.Limit(p.RoomsPerSecond), p.RoomBurst),
 		sleep:    defaultSleep,
+		maxBody:  maxBody,
 	}
+}
+
+// clone is a copy of the client that shares its limiters, so its requests
+// are paced with the client's own, and holds token; hc replaces the HTTP
+// client when not nil.
+func (c *Client) clone(token string, hc *http.Client) *Client {
+	if hc == nil {
+		hc = c.hc
+	}
+	return &Client{base: c.base, hc: hc, messages: c.messages, rooms: c.rooms, sleep: c.sleep, maxBody: c.maxBody, token: token}
 }
 
 // SetToken sets the access token; safe for concurrent use.
@@ -171,13 +184,16 @@ func (c *Client) doTpl(ctx context.Context, method, tpl, path string, limiters [
 			// The transport error names the URL, which may hold ids; say only that it failed.
 			return fmt.Errorf("matrix %s: %w", op, ErrUnavailable)
 		}
-		data, rerr := io.ReadAll(io.LimitReader(resp.Body, maxBody))
+		data, rerr := io.ReadAll(io.LimitReader(resp.Body, c.maxBody+1))
 		resp.Body.Close()
 		if rerr != nil {
 			if cerr := ctx.Err(); cerr != nil {
 				return cerr
 			}
 			return fmt.Errorf("matrix %s: %w", op, ErrUnavailable)
+		}
+		if int64(len(data)) > c.maxBody {
+			return fmt.Errorf("matrix %s: the answer is larger than %d bytes", op, c.maxBody)
 		}
 
 		switch {
@@ -205,7 +221,8 @@ func (c *Client) doTpl(ctx context.Context, method, tpl, path string, limiters [
 	}
 }
 
-// retryWait is retry_after_ms from the body, else Retry-After seconds, else 5s.
+// retryWait is retry_after_ms from the body, else Retry-After as seconds or
+// an HTTP date, else 5s.
 func retryWait(h http.Header, data []byte) time.Duration {
 	var b struct {
 		RetryAfterMS int64 `json:"retry_after_ms"`
@@ -216,6 +233,11 @@ func retryWait(h http.Header, data []byte) time.Duration {
 	if s := strings.TrimSpace(h.Get("Retry-After")); s != "" {
 		if n, err := strconv.ParseInt(s, 10, 64); err == nil && n > 0 {
 			return time.Duration(n) * time.Second
+		}
+		if at, err := http.ParseTime(s); err == nil {
+			if d := time.Until(at); d > 0 {
+				return d
+			}
 		}
 	}
 	return defaultRetryWait
@@ -234,9 +256,7 @@ func (c *Client) AuthMetadata(ctx context.Context) (string, error) {
 }
 
 // unauthenticated is a view of the client that sends no Authorization header.
-func (c *Client) unauthenticated() *Client {
-	return &Client{base: c.base, hc: c.hc, messages: c.messages, rooms: c.rooms, sleep: c.sleep}
-}
+func (c *Client) unauthenticated() *Client { return c.clone("", nil) }
 
 // WhoAmI returns the user and device the token belongs to.
 func (c *Client) WhoAmI(ctx context.Context) (userID, deviceID string, err error) {

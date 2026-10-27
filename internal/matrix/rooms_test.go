@@ -3,6 +3,7 @@ package matrix
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"reflect"
 	"strings"
 	"testing"
@@ -80,6 +81,9 @@ func TestSendIdempotentPath(t *testing.T) {
 	if srv.SendAttempts() != 2 || len(srv.Sends()) != 1 {
 		t.Fatalf("attempts %d sends %d", srv.SendAttempts(), len(srv.Sends()))
 	}
+	if n := len(srv.SendPaths()); n != 2 {
+		t.Fatalf("%d send paths", n)
+	}
 	for _, p := range srv.SendPaths() {
 		if p != "/_matrix/client/v3/rooms/%21r%3Aexample.org/send/m.room.message/t1" {
 			t.Fatalf("path = %s", p)
@@ -101,13 +105,9 @@ func TestSendRefused(t *testing.T) {
 	c, srv, _ := newClient(t, fast)
 	srv.RefuseSend("!r:example.org", 403, "M_FORBIDDEN")
 	err := c.Send(context.Background(), "!r:example.org", "t1", map[string]any{})
-	if !IsCode(err, "M_FORBIDDEN") || errorsIsUnavailable(err) {
+	if !IsCode(err, "M_FORBIDDEN") || errors.Is(err, ErrUnavailable) {
 		t.Fatalf("err = %v", err)
 	}
-}
-
-func errorsIsUnavailable(err error) bool {
-	return strings.Contains(err.Error(), ErrUnavailable.Error())
 }
 
 func TestLeaveForget(t *testing.T) {

@@ -3,6 +3,7 @@ package matrix
 import (
 	"context"
 	"errors"
+	"net/http"
 	"strings"
 	"sync"
 	"testing"
@@ -123,8 +124,48 @@ func TestRateLimitedStopsWithContext(t *testing.T) {
 	srv.RateLimitNext(1000, 60000, "")
 	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
 	defer cancel()
-	if _, _, err := c.WhoAmI(ctx); err == nil {
-		t.Fatal("expected the context to end the wait")
+	_, _, err := c.WhoAmI(ctx)
+	var me *Error
+	if !errors.Is(err, context.DeadlineExceeded) || errors.As(err, &me) {
+		t.Fatalf("err = %v, want the context's deadline", err)
+	}
+}
+
+func TestRateLimitedRetryAfterDate(t *testing.T) {
+	c, srv, sl := newClient(t, fast)
+	srv.RateLimitNext(1, 0, time.Now().Add(90*time.Second).UTC().Format(http.TimeFormat))
+	if _, _, err := c.WhoAmI(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	got := sl.got()
+	if len(got) != 1 || got[0] < 80*time.Second || got[0] > 91*time.Second {
+		t.Fatalf("sleeps = %v", got)
+	}
+}
+
+// A request that never reached the homeserver says so without its URL,
+// which may carry a room id, or the token.
+func TestTransportErrorHidesURLAndToken(t *testing.T) {
+	c, srv, _ := newClient(t, fast)
+	srv.Close()
+	err := c.Send(context.Background(), "!secret:example.org", "t1", map[string]any{})
+	if !errors.Is(err, ErrUnavailable) {
+		t.Fatalf("err = %v", err)
+	}
+	for _, bad := range []string{"secret", srv.URL, strings.TrimPrefix(srv.URL, "http://"), testToken} {
+		if strings.Contains(err.Error(), bad) {
+			t.Errorf("error %q carries %q", err, bad)
+		}
+	}
+}
+
+// An answer larger than the client reads is refused as such, not misread.
+func TestOversizedAnswer(t *testing.T) {
+	c, _, _ := newClient(t, fast)
+	c.maxBody = 16
+	_, _, err := c.WhoAmI(context.Background())
+	if err == nil || !strings.Contains(err.Error(), "larger than") {
+		t.Fatalf("err = %v", err)
 	}
 }
 

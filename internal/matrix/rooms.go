@@ -157,7 +157,7 @@ func (c *Client) Sync(ctx context.Context, since string, timeout time.Duration) 
 
 	hc := *c.hc
 	hc.Timeout = 0 // the context above is the deadline
-	lc := &Client{base: c.base, hc: &hc, messages: c.messages, rooms: c.rooms, sleep: c.sleep, token: c.bearer()}
+	lc := c.clone(c.bearer(), &hc)
 
 	var out SyncResponse
 	if err := lc.doTpl(ctx, "GET", "/_matrix/client/v3/sync", "/_matrix/client/v3/sync?"+q.Encode(), nil, nil, &out); err != nil {
