@@ -278,5 +278,10 @@ func (b *Bot) call(ctx context.Context, fn func() error) error {
 	if err := b.renew(ctx); err != nil {
 		return wrap(err)
 	}
-	return wrap(fn())
+	err = fn()
+	if matrix.IsCode(err, "M_UNKNOWN_TOKEN") {
+		// A fresh token is refused too: the trouble is the bot's, not the member's.
+		return fmt.Errorf("%w: the homeserver refuses the bot's token", ErrUnavailable)
+	}
+	return wrap(err)
 }

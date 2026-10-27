@@ -62,6 +62,7 @@ type Server struct {
 	encrypt       bool
 	members       map[string]map[string]string // room -> user -> membership
 	refuse        map[string]refusal
+	failState     *refusal
 	syncQ         []syncItem
 	syncSince     []string
 	syncQuery     url.Values
@@ -346,6 +347,10 @@ func (s *Server) send(w http.ResponseWriter, r *http.Request, room, txn string) 
 func (s *Server) state(w http.ResponseWriter, room, evType, key string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if f := s.failState; f != nil {
+		s.errorJSON(w, f.status, f.errcode, "refused")
+		return
+	}
 	switch {
 	case evType == "m.room.encryption" && key == "":
 		for _, rm := range s.rooms {
@@ -439,4 +444,19 @@ func (s *Server) AddRoom(id string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.rooms = append(s.rooms, &Room{ID: id})
+}
+
+// FailState makes every room state read answer status with errcode, until
+// ClearFailState.
+func (s *Server) FailState(status int, errcode string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.failState = &refusal{status, errcode}
+}
+
+// ClearFailState restores room state reads.
+func (s *Server) ClearFailState() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.failState = nil
 }

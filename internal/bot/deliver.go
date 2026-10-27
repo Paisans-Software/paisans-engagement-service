@@ -69,10 +69,11 @@ func (b *Bot) Prepare(ctx context.Context, subject string) (Target, bool, error)
 	return Target{Subject: subject, UserID: userID, RoomID: m.RoomID}, true, nil
 }
 
-// refused reports whether err is a 4xx refusal from the homeserver.
+// refused reports whether err is a 4xx refusal from the homeserver about the
+// member or the room. A refusal of the bot's own token is not one.
 func refused(err error) bool {
 	var e *matrix.Error
-	return errors.As(err, &e)
+	return errors.As(err, &e) && e.Status != 401 && e.Code != "M_UNKNOWN_TOKEN"
 }
 
 // Deliver makes the member's room if they have none and sends n with txnID.
@@ -113,23 +114,42 @@ func (b *Bot) Deliver(ctx context.Context, t Target, txnID string, n Notice) (Ou
 	return Refused, nil
 }
 
-// newRoom creates and records the member's room, or abandons it if it is encrypted.
+// newRoom creates the member's room and records it before checking it, so a
+// room is never left unrecorded for a later run to duplicate. A room that
+// turns out encrypted, or that the homeserver refuses to describe, is
+// abandoned; one whose check could not be made stays recorded and is checked
+// no further, since the next delivery sends into it.
 func (b *Bot) newRoom(ctx context.Context, t Target) (string, error) {
 	var room string
 	if err := b.call(ctx, func() (e error) { room, e = b.m.CreateDirectRoom(ctx, b.userID, t.UserID); return }); err != nil {
 		return "", err
 	}
+	if err := b.st.SetMatrixRoom(ctx, t.Subject, room); err != nil {
+		b.abandon(ctx, room)
+		return "", err
+	}
 	var enc bool
 	if err := b.call(ctx, func() (e error) { enc, e = b.m.Encrypted(ctx, room); return }); err != nil {
+		if refused(err) {
+			if ferr := b.st.ForgetMatrixRoom(ctx, t.Subject, room); ferr != nil {
+				return "", ferr
+			}
+			b.abandon(ctx, room)
+		}
 		return "", err
 	}
 	if enc {
-		_ = b.call(ctx, func() error { return b.m.Leave(ctx, room) })
-		_ = b.call(ctx, func() error { return b.m.Forget(ctx, room) })
+		if err := b.st.ForgetMatrixRoom(ctx, t.Subject, room); err != nil {
+			return "", err
+		}
+		b.abandon(ctx, room)
 		return "", ErrEncrypted
 	}
-	if err := b.st.SetMatrixRoom(ctx, t.Subject, room); err != nil {
-		return "", err
-	}
 	return room, nil
+}
+
+// abandon leaves and forgets a room, best effort.
+func (b *Bot) abandon(ctx context.Context, room string) {
+	_ = b.call(ctx, func() error { return b.m.Leave(ctx, room) })
+	_ = b.call(ctx, func() error { return b.m.Forget(ctx, room) })
 }

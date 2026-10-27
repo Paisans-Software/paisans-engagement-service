@@ -197,3 +197,60 @@ func TestDeliverUnavailable(t *testing.T) {
 		t.Fatalf("room stored: %q", m.RoomID)
 	}
 }
+
+func TestNewRoomStateReadUnavailableKeepsRoom(t *testing.T) {
+	e, b := started(t)
+	ctx := context.Background()
+	tg := prepared(t, e, b)
+	e.syn.FailState(503, "")
+	if _, err := b.Deliver(ctx, tg, "t1", note()); !errors.Is(err, ErrUnavailable) {
+		t.Fatal(err)
+	}
+	m, _ := e.st.MatrixMember(ctx, "sub-1")
+	if m.RoomID == "" || len(e.syn.Rooms()) != 1 || e.syn.Rooms()[0].Left {
+		t.Fatalf("member=%+v rooms=%+v", m, e.syn.Rooms())
+	}
+	e.syn.ClearFailState()
+	tg, _, _ = b.Prepare(ctx, "sub-1")
+	if out, err := b.Deliver(ctx, tg, "t1", note()); err != nil || out != Sent {
+		t.Fatal(out, err)
+	}
+	if len(e.syn.Rooms()) != 1 || len(e.syn.Sends()) != 1 || e.syn.Sends()[0].Room != m.RoomID {
+		t.Fatalf("rooms=%d sends=%+v", len(e.syn.Rooms()), e.syn.Sends())
+	}
+}
+
+func TestNewRoomStateReadRefusedAbandonsRoom(t *testing.T) {
+	e, b := started(t)
+	ctx := context.Background()
+	tg := prepared(t, e, b)
+	e.syn.FailState(403, "M_FORBIDDEN")
+	out, err := b.Deliver(ctx, tg, "t1", note())
+	if err != nil || out != Refused {
+		t.Fatal(out, err)
+	}
+	m, _ := e.st.MatrixMember(ctx, "sub-1")
+	rs := e.syn.Rooms()
+	if m.RoomID != "" || len(rs) != 1 || !rs[0].Left || !rs[0].Forgotten {
+		t.Fatalf("member=%+v rooms=%+v", m, rs)
+	}
+}
+
+func TestRejectedBotTokenIsNotARefusal(t *testing.T) {
+	e, b := started(t)
+	ctx := context.Background()
+	tg := prepared(t, e, b)
+	if _, err := b.Deliver(ctx, tg, "t1", note()); err != nil {
+		t.Fatal(err)
+	}
+	tg, _, _ = b.Prepare(ctx, "sub-1")
+	e.syn.Accept(func(string) (string, string, bool) { return "", "", false })
+	out, err := b.Deliver(ctx, tg, "t2", note())
+	if !errors.Is(err, ErrUnavailable) || out != 0 {
+		t.Fatal(out, err)
+	}
+	m, _ := e.st.MatrixMember(ctx, "sub-1")
+	if m.RoomID == "" || !m.Enabled {
+		t.Fatalf("member = %+v", m)
+	}
+}
