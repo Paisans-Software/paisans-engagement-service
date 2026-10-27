@@ -4,18 +4,22 @@ package mbin
 // qualified, so the connection's search_path picks the schema. Every column
 // named here must be in Allowlist.
 
-// memberRule is who counts as a member: a local, verified, live person with
-// an address to mail and a Pocket ID subject to name them by. The alias u
-// must be "user".
-const memberRule = `u.ap_id IS NULL AND u.is_verified AND NOT u.is_banned AND NOT u.is_deleted
+// memberRule is who counts as a member: a local, live person with a Pocket ID
+// subject to name them by. An address is mailed only when verified, which
+// membersSQL decides. The alias u must be "user".
+const memberRule = `u.ap_id IS NULL AND NOT u.is_banned AND NOT u.is_deleted
 	AND u.marked_for_deletion_at IS NULL AND u.visibility = 'visible' AND u.type = 'Person'
-	AND u.email IS NOT NULL AND u.oauth_oidc_id IS NOT NULL`
+	AND u.oauth_oidc_id IS NOT NULL`
 
 const membersSQL = `
-SELECT u.id, u.oauth_oidc_id, u.email, u.username
+SELECT u.id, u.oauth_oidc_id, CASE WHEN u.is_verified THEN u.email END, u.username
 FROM "user" u
 WHERE ` + memberRule + `
 ORDER BY u.id`
+
+// isMemberSQL is whether a Pocket ID subject belongs to a member. $1 is the subject.
+const isMemberSQL = `
+SELECT EXISTS (SELECT 1 FROM "user" u WHERE u.oauth_oidc_id = $1 AND ` + memberRule + `)`
 
 // hotSQL is the week's candidate threads, entries and posts alike, with their
 // figures and, for local items, their top three comments. $1 and $2 are the

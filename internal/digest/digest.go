@@ -56,7 +56,8 @@ type Item struct {
 }
 
 type Member struct {
-	ID                       int64
+	ID int64
+	// Email is empty when the member has no verified address to mail.
 	Subject, Email, Username string
 }
 

@@ -40,21 +40,37 @@ func newSource(pool *pgxpool.Pool, siteURL string) *Source {
 
 func (s *Source) Close() { s.pool.Close() }
 
-// Members is everyone who may receive the digest, by Mbin user id.
+// Members is everyone who may receive the digest, by Mbin user id. Email is
+// empty for a member without a verified address.
 func (s *Source) Members(ctx context.Context) ([]digest.Member, error) {
 	rows, err := s.pool.Query(ctx, membersSQL)
 	if err != nil {
 		return nil, fmt.Errorf("members: %w", err)
 	}
 	ms, err := pgx.CollectRows(rows, func(r pgx.CollectableRow) (digest.Member, error) {
-		var m digest.Member
-		err := r.Scan(&m.ID, &m.Subject, &m.Email, &m.Username)
+		var (
+			m     digest.Member
+			email *string
+		)
+		err := r.Scan(&m.ID, &m.Subject, &email, &m.Username)
+		if email != nil {
+			m.Email = *email
+		}
 		return m, err
 	})
 	if err != nil {
 		return nil, fmt.Errorf("members: %w", err)
 	}
 	return ms, nil
+}
+
+// IsMember reports whether the Pocket ID subject belongs to a member.
+func (s *Source) IsMember(ctx context.Context, subject string) (bool, error) {
+	var ok bool
+	if err := s.pool.QueryRow(ctx, isMemberSQL, subject).Scan(&ok); err != nil {
+		return false, fmt.Errorf("is member: %w", err)
+	}
+	return ok, nil
 }
 
 // Hot is the week's candidate threads, best first by score plus comments.
