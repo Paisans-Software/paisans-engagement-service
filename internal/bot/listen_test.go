@@ -3,6 +3,7 @@ package bot
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 	"sync/atomic"
@@ -433,5 +434,98 @@ func TestStoreErrorSkippedAfterThreeAttempts(t *testing.T) {
 	}
 	if !enabled(t, e) {
 		t.Fatal("the skipped leave was applied")
+	}
+}
+
+func TestCommandOfReply(t *testing.T) {
+	fallback := "> <@digest-bot:example.org> Your weekly digest from Talk\n> \n> Reply stop to stop these messages.\n\nstop"
+	if got := commandOf(fallback, true); got != "stop" {
+		t.Errorf("reply: %q", got)
+	}
+	if got := commandOf(fallback, false); got != "" {
+		t.Errorf("not a reply: %q", got)
+	}
+	if got := commandOf("> quoted\nstart", true); got != "start" {
+		t.Errorf("no blank line: %q", got)
+	}
+}
+
+func TestStopAsReply(t *testing.T) {
+	e, b, room := memberRoom(t)
+	prime(t, e)
+	c, _ := json.Marshal(map[string]any{"msgtype": "m.text",
+		"body":         "> <@digest-bot:example.org> Your weekly digest\n\nstop",
+		"m.relates_to": map[string]any{"m.in_reply_to": map[string]string{"event_id": "$notice"}}})
+	ev := fmt.Sprintf(`{"type":"m.room.message","event_id":"$1","sender":"@one:example.org","content":%s}`, c)
+	syncOf(e, b, [2]string{"b1", joined(room, ev)})
+	listenUntil(t, e, b, "b1")
+	if enabled(t, e) {
+		t.Fatal("a stop sent as a reply was not obeyed")
+	}
+}
+
+// A member's invitation that cannot be prepared for a reason other than an
+// outage is rejected, not left pending.
+func TestInvitePrepareFailureRejects(t *testing.T) {
+	e, b, _ := memberRoom(t)
+	prime(t, e)
+	e.syn.AddRoom("!invite:example.org")
+	restore := failingStore(t, e)
+	defer restore()
+	b.wait = func(context.Context, time.Duration) error { return nil }
+	syncOf(e, b, [2]string{"b1", invited("!invite:example.org", "@one:example.org")})
+	listenUntil(t, e, b, "b1")
+	for _, r := range e.syn.Rooms() {
+		if r.ID == "!invite:example.org" && !r.Left {
+			t.Error("invite not rejected")
+		}
+	}
+}
+
+type failingChecker struct{}
+
+func (failingChecker) IsMember(context.Context, string) (bool, error) {
+	return false, errors.New("mbin is down")
+}
+
+// An invitation whose membership check fails waits for Mbin rather than
+// rejecting a member.
+func TestInviteMembershipCheckFailureWaits(t *testing.T) {
+	e, b, _ := memberRoom(t)
+	prime(t, e)
+	b.members = failingChecker{}
+	e.syn.AddRoom("!invite:example.org")
+	var waits atomic.Int32
+	b.wait = func(ctx context.Context, d time.Duration) error {
+		waits.Add(1)
+		t := time.NewTimer(5 * time.Millisecond)
+		defer t.Stop()
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-t.C:
+			return nil
+		}
+	}
+	syncOf(e, b, [2]string{"b1", invited("!invite:example.org", "@one:example.org")})
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- b.Listen(ctx) }()
+	deadline := time.Now().Add(5 * time.Second)
+	for waits.Load() < 5 && time.Now().Before(deadline) {
+		time.Sleep(5 * time.Millisecond)
+	}
+	cancel()
+	<-done
+	if waits.Load() < 5 {
+		t.Fatalf("%d retries", waits.Load())
+	}
+	for _, r := range e.syn.Rooms() {
+		if r.ID == "!invite:example.org" && r.Left {
+			t.Error("a member's invite was rejected over an Mbin outage")
+		}
+	}
+	if e.state(t, keySyncToken) != "start" {
+		t.Fatal("the batch was passed over")
 	}
 }

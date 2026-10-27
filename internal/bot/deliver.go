@@ -4,6 +4,9 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
+	"sync"
+	"time"
 
 	"github.com/paisans-software/paisans-engagement-service/internal/matrix"
 )
@@ -19,6 +22,9 @@ const (
 	Sent Outcome = iota + 1
 	// Refused means the member cannot be messaged now; the state is updated.
 	Refused
+	// Off means the member turned the messages off after Prepare; nothing
+	// was sent.
+	Off
 )
 
 // ErrEncrypted means a new room came out encrypted and was abandoned. It is
@@ -76,11 +82,32 @@ func refused(err error) bool {
 	return errors.As(err, &e) && e.Status != 401 && e.Code != "M_UNKNOWN_TOKEN"
 }
 
+// lockSubject serialises the bot's work for one member, so a delivery and the
+// listener's handling of the same member's command, leave or invitation do
+// not interleave. It returns the unlock.
+func (b *Bot) lockSubject(subject string) func() {
+	v, _ := b.subjects.LoadOrStore(subject, &sync.Mutex{})
+	mu := v.(*sync.Mutex)
+	mu.Lock()
+	return mu.Unlock
+}
+
 // Deliver makes the member's room if they have none and sends n with txnID.
-// An error that is ErrUnavailable means nothing was decided: the caller
-// releases its claim and tries again later.
+// It reads the member's setting and room again first, under the member's
+// lock, so a stop handled since Prepare sends nothing (Off) and a room made
+// since for their invitation is the one used. An error that is
+// ErrUnavailable means nothing was decided: the caller releases its claim
+// and tries again later.
 func (b *Bot) Deliver(ctx context.Context, t Target, txnID string, n Notice) (Outcome, error) {
-	room := t.RoomID
+	defer b.lockSubject(t.Subject)()
+	m, err := b.st.MatrixMember(ctx, t.Subject)
+	if err != nil {
+		return 0, err
+	}
+	if !m.Enabled {
+		return Off, nil
+	}
+	room := m.RoomID
 	if room == "" {
 		var err error
 		if room, err = b.newRoom(ctx, t); err != nil {
@@ -91,7 +118,7 @@ func (b *Bot) Deliver(ctx context.Context, t Target, txnID string, n Notice) (Ou
 		}
 	}
 
-	err := b.call(ctx, func() error { return b.m.Send(ctx, room, txnID, n.Content()) })
+	err = b.call(ctx, func() error { return b.m.Send(ctx, room, txnID, n.Content()) })
 	if err == nil {
 		return Sent, nil
 	}
@@ -151,8 +178,45 @@ func (b *Bot) newRoom(ctx context.Context, t Target) (string, error) {
 	return room, nil
 }
 
-// abandon leaves and forgets a room, best effort.
+// leaveAttempts is how many times abandon tries to leave a room.
+const leaveAttempts = 3
+
+// abandon leaves and forgets a room. Leaving is what keeps a later send from
+// reaching it, so a failed leave is tried again and, if it never succeeds,
+// logged; a refusal means the bot is not in the room. Forgetting is best
+// effort.
 func (b *Bot) abandon(ctx context.Context, room string) {
-	_ = b.call(ctx, func() error { return b.m.Leave(ctx, room) })
+	var err error
+	for i := 0; i < leaveAttempts; i++ {
+		if i > 0 {
+			if b.sleep(ctx, time.Duration(i)*time.Second) != nil {
+				break
+			}
+		}
+		if err = b.call(ctx, func() error { return b.m.Leave(ctx, room) }); err == nil || refused(err) {
+			err = nil
+			break
+		}
+	}
+	if err != nil {
+		slog.Warn("matrix bot: could not leave an abandoned room; it stays joined", "reason", reason(err))
+		return
+	}
 	_ = b.call(ctx, func() error { return b.m.Forget(ctx, room) })
+}
+
+// sleep waits d, or as b.wait says in tests; it returns ctx's error if ctx
+// ends first.
+func (b *Bot) sleep(ctx context.Context, d time.Duration) error {
+	if b.wait != nil {
+		return b.wait(ctx, d)
+	}
+	t := time.NewTimer(d)
+	defer t.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-t.C:
+		return nil
+	}
 }

@@ -3,7 +3,9 @@ package bot
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/paisans-software/paisans-engagement-service/internal/digest"
 )
@@ -293,5 +295,92 @@ func TestRepeatedUnauthorizedIsUnavailable(t *testing.T) {
 				t.Fatalf("member = %+v", m)
 			}
 		})
+	}
+}
+
+func TestPrepareLocked(t *testing.T) {
+	e, b := started(t)
+	ctx := context.Background()
+	id := link(e, "sub-1", "one")
+	if _, ok, err := b.Prepare(ctx, "sub-1"); err != nil || !ok {
+		t.Fatal(ok, err)
+	}
+	// Locked once the account is known, and locked before it is.
+	e.mas.Lock(id)
+	if _, ok, err := b.Prepare(ctx, "sub-1"); ok || err != nil {
+		t.Fatalf("cached: %v %v", ok, err)
+	}
+	e.mas.Lock(link(e, "sub-2", "two"))
+	if _, ok, err := b.Prepare(ctx, "sub-2"); ok || err != nil {
+		t.Fatalf("looked up: %v %v", ok, err)
+	}
+}
+
+// A stop handled after Prepare keeps Deliver from sending.
+func TestDeliverAfterStop(t *testing.T) {
+	e, b := started(t)
+	ctx := context.Background()
+	tg := prepared(t, e, b)
+	if err := e.st.SetMatrixEnabled(ctx, "sub-1", false); err != nil {
+		t.Fatal(err)
+	}
+	out, err := b.Deliver(ctx, tg, "t1", note())
+	if err != nil || out != Off {
+		t.Fatal(out, err)
+	}
+	if len(e.syn.Rooms()) != 0 || len(e.syn.Sends()) != 0 {
+		t.Fatalf("rooms=%d sends=%d", len(e.syn.Rooms()), len(e.syn.Sends()))
+	}
+}
+
+// A room the listener made for the member after Prepare is the one Deliver
+// sends into; it makes no second room.
+func TestDeliverUsesRoomMadeMeanwhile(t *testing.T) {
+	e, b := started(t)
+	ctx := context.Background()
+	tg := prepared(t, e, b)
+	e.syn.AddRoom("!invited:example.org")
+	if err := e.st.SetMatrixRoom(ctx, "sub-1", "!invited:example.org"); err != nil {
+		t.Fatal(err)
+	}
+	if out, err := b.Deliver(ctx, tg, "t1", note()); err != nil || out != Sent {
+		t.Fatal(out, err)
+	}
+	if s := e.syn.Sends(); len(s) != 1 || s[0].Room != "!invited:example.org" || len(e.syn.Rooms()) != 1 {
+		t.Fatalf("sends=%+v rooms=%d", s, len(e.syn.Rooms()))
+	}
+}
+
+// An encrypted room whose first leave fails is still left.
+func TestEncryptedRoomLeaveRetried(t *testing.T) {
+	e, b := started(t)
+	b.wait = func(context.Context, time.Duration) error { return nil }
+	e.syn.EncryptNewRooms(true)
+	e.syn.FailLeaves.Store(1)
+	tg := prepared(t, e, b)
+	if _, err := b.Deliver(context.Background(), tg, "t1", note()); !errors.Is(err, ErrEncrypted) {
+		t.Fatal(err)
+	}
+	if rs := e.syn.Rooms(); len(rs) != 1 || !rs[0].Left {
+		t.Fatalf("rooms=%+v", rs)
+	}
+}
+
+// One that cannot be left at all is logged, not passed over in silence.
+func TestEncryptedRoomLeaveFailureLogged(t *testing.T) {
+	buf := captureLog(t)
+	e, b := started(t)
+	b.wait = func(context.Context, time.Duration) error { return nil }
+	e.syn.EncryptNewRooms(true)
+	e.syn.FailLeaves.Store(100)
+	tg := prepared(t, e, b)
+	if _, err := b.Deliver(context.Background(), tg, "t1", note()); !errors.Is(err, ErrEncrypted) {
+		t.Fatal(err)
+	}
+	if !strings.Contains(buf.String(), "could not leave") {
+		t.Fatalf("log: %s", buf.String())
+	}
+	if strings.Contains(buf.String(), "!room") {
+		t.Fatalf("log names the room: %s", buf.String())
 	}
 }

@@ -64,7 +64,10 @@ type Bot struct {
 	cfg     Config
 	userID  string
 
-	mu sync.Mutex // serialises token renewal
+	mu  sync.Mutex // serialises token renewal and guards tok
+	tok string     // the token the Matrix client holds
+
+	subjects sync.Map // subject → *sync.Mutex, see lockSubject
 
 	// attempts counts, per event, the batches Listen tried that failed on it.
 	attempts map[string]int
@@ -163,6 +166,11 @@ func (b *Bot) account(ctx context.Context) error {
 		}
 		u, err = b.a.CreateUser(ctx, b.cfg.Localpart)
 		if errors.Is(err, mas.ErrTaken) {
+			// Someone else took the name; an intent left behind could
+			// later adopt their account.
+			if derr := b.st.DeleteBotState(ctx, keyCreateIntent); derr != nil {
+				return derr
+			}
 			return b.takenErr()
 		}
 		if err != nil {
@@ -216,7 +224,7 @@ func (b *Bot) token(ctx context.Context) error {
 	if tok, ok, err := b.st.BotState(ctx, keyAccessToken); err != nil {
 		return err
 	} else if ok {
-		b.m.SetToken(tok)
+		b.setToken(tok)
 		user, device, err := b.m.WhoAmI(ctx)
 		if err == nil && user == b.userID && device == Device {
 			return nil
@@ -225,7 +233,7 @@ func (b *Bot) token(ctx context.Context) error {
 			return err
 		}
 	}
-	if err := b.renew(ctx); err != nil {
+	if err := b.renew(ctx, b.currentToken()); err != nil {
 		return err
 	}
 	user, device, err := b.m.WhoAmI(ctx)
@@ -238,10 +246,28 @@ func (b *Bot) token(ctx context.Context) error {
 	return nil
 }
 
-// renew obtains a new token (regenerate, else create) and stores it.
-func (b *Bot) renew(ctx context.Context) error {
+func (b *Bot) setToken(tok string) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
+	b.tok = tok
+	b.m.SetToken(tok)
+}
+
+func (b *Bot) currentToken() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.tok
+}
+
+// renew obtains a new token (regenerate, else create) and stores it, unless
+// the token is no longer stale: another caller refused with the same token
+// has renewed it already.
+func (b *Bot) renew(ctx context.Context, stale string) error {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if b.tok != stale {
+		return nil
+	}
 	var tok string
 	sid, ok, err := b.st.BotState(ctx, keySession)
 	if err != nil {
@@ -272,6 +298,7 @@ func (b *Bot) renew(ctx context.Context) error {
 	if err := b.st.SetBotState(ctx, keyAccessToken, tok); err != nil {
 		return err
 	}
+	b.tok = tok
 	b.m.SetToken(tok)
 	return nil
 }
@@ -281,11 +308,12 @@ func (b *Bot) renew(ctx context.Context) error {
 // refuses, is the bot's trouble and not the caller's subject's: it comes back
 // as ErrUnavailable so the caller releases its work and tries again later.
 func (b *Bot) call(ctx context.Context, fn func() error) error {
+	stale := b.currentToken()
 	err := fn()
 	if !unauthorized(err) {
 		return wrap(err)
 	}
-	if err := b.renew(ctx); err != nil {
+	if err := b.renew(ctx, stale); err != nil {
 		if errors.Is(err, ctx.Err()) && ctx.Err() != nil {
 			return err
 		}

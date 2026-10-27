@@ -353,7 +353,7 @@ func (r *Runner) matrixPass(ctx context.Context, members []digest.Member, week t
 		return err == nil, err
 	}
 
-	var n struct{ sent, refused, noAccount, released, skipped int }
+	var n struct{ sent, refused, off, noAccount, released, skipped int }
 	var firstErr error
 	fail := func(err error) {
 		if firstErr == nil {
@@ -362,7 +362,7 @@ func (r *Runner) matrixPass(ctx context.Context, members []digest.Member, week t
 	}
 	defer func() {
 		slog.Info("matrix run", "week", week.Format("2006-01-02"), "sent", n.sent, "refused", n.refused,
-			"no_account", n.noAccount, "released", n.released, "skipped", n.skipped)
+			"off", n.off, "no_account", n.noAccount, "released", n.released, "skipped", n.skipped)
 	}()
 
 	// Waits for the homeserver's rate limits end with the day too. A wait
@@ -466,6 +466,16 @@ func (r *Runner) matrixPass(ctx context.Context, members []digest.Member, week t
 		// Released or finished even when the day or ctx has ended, or the
 		// member would stay claimed and unsent for the week.
 		wctx, wcancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
+		if err == nil && out == bot.Off {
+			// Turned off since Prepare: nothing was sent, and a start later
+			// today may still reach them.
+			n.off++
+			if rerr := r.Store.ReleaseDM(wctx, m.Subject, week); rerr != nil {
+				slog.Error("matrix claim not released; the member is skipped this week", "member", m.ID, "error", rerr)
+			}
+			wcancel()
+			continue
+		}
 		if err == nil && out != bot.Sent && out != bot.Refused {
 			err = fmt.Errorf("unknown delivery outcome %d", out)
 		}

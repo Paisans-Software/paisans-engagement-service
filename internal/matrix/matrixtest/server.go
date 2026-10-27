@@ -53,6 +53,8 @@ type Server struct {
 	TokenEndpoint string // what auth_metadata returns
 	Down          atomic.Bool
 	UnauthCode    atomic.Value // errcode of a 401 from a rejected token; default M_UNKNOWN_TOKEN
+	// FailLeaves is how many of the next leave requests answer 503.
+	FailLeaves atomic.Int32
 
 	serverName string
 	accept     func(token string) (user, device string, ok bool)
@@ -258,14 +260,14 @@ func (s *Server) handle(w http.ResponseWriter, r *http.Request) {
 	}
 
 	path := r.URL.EscapedPath()
+	s.mu.Lock()
+	accept, token, device, endpoint := s.accept, s.Token, s.Device, s.TokenEndpoint
+	s.mu.Unlock()
 	if path == "/_matrix/client/v1/auth_metadata" {
-		s.writeJSON(w, map[string]any{"token_endpoint": s.TokenEndpoint})
+		s.writeJSON(w, map[string]any{"token_endpoint": endpoint})
 		return
 	}
-	s.mu.Lock()
-	accept := s.accept
-	s.mu.Unlock()
-	whoUser, whoDevice := "@digestbot:"+s.serverName, s.Device
+	whoUser, whoDevice := "@digestbot:"+s.serverName, device
 	if accept != nil {
 		u, d, ok := accept(strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer "))
 		if !ok {
@@ -273,7 +275,7 @@ func (s *Server) handle(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		whoUser, whoDevice = u, d
-	} else if r.Header.Get("Authorization") != "Bearer "+s.Token {
+	} else if r.Header.Get("Authorization") != "Bearer "+token {
 		s.unauth(w)
 		return
 	}
@@ -289,6 +291,10 @@ func (s *Server) handle(w http.ResponseWriter, r *http.Request) {
 	case len(seg) == 3 && seg[0] == "profile" && seg[2] == "displayname":
 		s.profile(w, r, seg[1])
 	case r.Method == "PUT" && len(seg) == 5 && seg[0] == "rooms" && seg[2] == "send":
+		if seg[3] != "m.room.message" {
+			s.errorJSON(w, http.StatusBadRequest, "M_UNRECOGNIZED", "the bot sends m.room.message only")
+			return
+		}
 		s.mu.Lock()
 		s.sendPaths = append(s.sendPaths, path)
 		s.mu.Unlock()
@@ -400,6 +406,11 @@ func (s *Server) createRoom(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) leaveForget(w http.ResponseWriter, room, action string) {
+	if action == "leave" && s.FailLeaves.Load() > 0 {
+		s.FailLeaves.Add(-1)
+		http.Error(w, "down", http.StatusServiceUnavailable)
+		return
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	for _, rm := range s.rooms {

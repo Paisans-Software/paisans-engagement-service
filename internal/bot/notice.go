@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"html/template"
+	"log/slog"
 	"strings"
 	"time"
 
@@ -75,7 +76,8 @@ func Weekly(d digest.Digest, meta, link string) Notice {
 		Items      []titled
 	}{meta, link, items}
 	if err := weeklyHTML.Execute(&buf, data); err != nil {
-		buf.Reset() // the plain body still goes out
+		slog.Warn("matrix bot: the notice's HTML could not be rendered; it goes out as plain text", "error", err)
+		buf.Reset()
 	}
 	return Notice{Body: strings.Join(lines, "\n"), FormattedBody: buf.String()}
 }

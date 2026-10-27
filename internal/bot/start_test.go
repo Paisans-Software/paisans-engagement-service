@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net/http"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -291,5 +292,125 @@ func TestCallRenewsOnUnknownToken(t *testing.T) {
 	}
 	if e.state(t, "access_token") != e.mas.Sessions()[0].Token {
 		t.Fatal("renewed token not stored")
+	}
+}
+
+// A name taken between the lookup and the create is refused like any taken
+// name, and leaves no intent behind that could adopt the other account later.
+func TestStartTakenRace(t *testing.T) {
+	e := newEnv(t)
+	e.mas.AddUser("digest-bot", time.Now())
+	e.mas.FailUsernames.Store(404)
+	if _, err := e.start(t); !errors.Is(err, ErrOff) {
+		t.Fatalf("err = %v", err)
+	}
+	if _, ok, _ := e.st.BotState(context.Background(), "create_intent"); ok {
+		t.Fatal("create_intent kept after a taken name")
+	}
+}
+
+// A stored account MAS no longer has is replaced by a new one under the
+// same name.
+func TestStartStoredAccountMissing(t *testing.T) {
+	e := newEnv(t)
+	ctx := context.Background()
+	for k, v := range map[string]string{"mas_user_id": "01MISSING", "localpart": "digest-bot",
+		"session_id": "01OLDSESSION", "access_token": "old-token"} {
+		if err := e.st.SetBotState(ctx, k, v); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := e.start(t); err != nil {
+		t.Fatal(err)
+	}
+	users := e.mas.Users()
+	if len(users) != 1 || e.state(t, "mas_user_id") != users[0].ID {
+		t.Fatalf("users=%+v state=%q", users, e.state(t, "mas_user_id"))
+	}
+	if ss := e.mas.Sessions(); len(ss) != 1 || e.state(t, "session_id") != ss[0].ID {
+		t.Fatalf("sessions=%+v", ss)
+	}
+}
+
+// A stored account that MAS deactivated is not ours to use, and the name
+// stays taken by it.
+func TestStartStoredAccountDeactivated(t *testing.T) {
+	e := newEnv(t)
+	if _, err := e.start(t); err != nil {
+		t.Fatal(err)
+	}
+	e.mas.Deactivate(e.mas.Users()[0].ID)
+	if _, err := e.start(t); !errors.Is(err, ErrOff) {
+		t.Fatalf("err = %v", err)
+	}
+	if n := len(e.mas.Users()); n != 1 {
+		t.Fatalf("users = %d", n)
+	}
+}
+
+// A stored token that works but belongs to another user or device is
+// replaced.
+func TestStartTokenForWrongDevice(t *testing.T) {
+	for name, who := range map[string][2]string{
+		"device": {botUser, "OTHER"},
+		"user":   {"@someone:example.org", "DIGESTBOT"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			e := newEnv(t)
+			if _, err := e.start(t); err != nil {
+				t.Fatal(err)
+			}
+			old := e.state(t, "access_token")
+			e.syn.Accept(func(token string) (string, string, bool) {
+				if token == old {
+					return who[0], who[1], true
+				}
+				for _, s := range e.mas.Sessions() {
+					if s.Token == token {
+						return botUser, "DIGESTBOT", true
+					}
+				}
+				return "", "", false
+			})
+			if _, err := e.start(t); err != nil {
+				t.Fatal(err)
+			}
+			if got := e.state(t, "access_token"); got == old || got != e.mas.Sessions()[0].Token {
+				t.Fatalf("token %q, old %q", got, old)
+			}
+		})
+	}
+}
+
+// Callers refused for the same stale token renew it once between them.
+func TestConcurrentRefusalsRenewOnce(t *testing.T) {
+	e, b := started(t)
+	ctx := context.Background()
+	before := e.mas.Sessions()[0].Token
+	e.syn.Accept(func(token string) (string, string, bool) {
+		for _, s := range e.mas.Sessions() {
+			if s.Token == token && token != before {
+				return botUser, "DIGESTBOT", true
+			}
+		}
+		return "", "", false
+	})
+	var wg sync.WaitGroup
+	errs := make([]error, 4)
+	for i := range errs {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			errs[i] = b.call(ctx, func() error { _, _, err := b.m.WhoAmI(ctx); return err })
+		}()
+	}
+	wg.Wait()
+	for i, err := range errs {
+		if err != nil {
+			t.Fatalf("caller %d: %v", i, err)
+		}
+	}
+	if got := e.mas.Sessions()[0].Token; got != before+"r" {
+		t.Fatalf("token %q after renewal from %q", got, before)
 	}
 }

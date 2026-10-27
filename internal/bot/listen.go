@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log/slog"
 	"strings"
 	"time"
@@ -37,6 +38,24 @@ func Command(body string) string {
 		return "start"
 	}
 	return ""
+}
+
+// commandOf is Command of a message body. A reply carries the quoted message
+// it answers ahead of the member's own text, as "> " lines and a blank line,
+// and those are dropped first.
+func commandOf(body string, reply bool) string {
+	if reply {
+		lines := strings.Split(body, "\n")
+		i := 0
+		for i < len(lines) && (strings.HasPrefix(lines[i], "> ") || lines[i] == ">") {
+			i++
+		}
+		if i > 0 && i < len(lines) && strings.TrimSpace(lines[i]) == "" {
+			i++
+		}
+		body = strings.Join(lines[i:], "\n")
+	}
+	return Command(body)
 }
 
 // reason describes err for a log line without naming a member, a room or a
@@ -97,17 +116,7 @@ func (b *Bot) Listen(ctx context.Context) error {
 // ctx ends first.
 func (b *Bot) pause(ctx context.Context, cause error, d time.Duration) error {
 	slog.Warn("matrix bot: retrying", "reason", reason(cause), "retry_in", d.String())
-	if b.wait != nil {
-		return b.wait(ctx, d)
-	}
-	t := time.NewTimer(d)
-	defer t.Stop()
-	select {
-	case <-ctx.Done():
-		return ctx.Err()
-	case <-t.C:
-		return nil
-	}
+	return b.sleep(ctx, d)
 }
 
 // replyTxn is the transaction id of a reply to event id, so that a replayed
@@ -198,6 +207,7 @@ func (b *Bot) left(ctx context.Context, room string) error {
 	if err != nil || !ok {
 		return err
 	}
+	defer b.lockSubject(m.Subject)()
 	return b.st.ForgetMatrixRoom(ctx, m.Subject, room)
 }
 
@@ -212,14 +222,20 @@ func (b *Bot) event(ctx context.Context, room string, ev matrix.Event) error {
 		if err != nil || !ok || m.UserID == "" || ev.Sender != m.UserID {
 			return err
 		}
+		defer b.lockSubject(m.Subject)()
 		var raw struct {
-			MsgType string `json:"msgtype"`
-			Body    string `json:"body"`
+			MsgType   string `json:"msgtype"`
+			Body      string `json:"body"`
+			RelatesTo struct {
+				InReplyTo *struct {
+					EventID string `json:"event_id"`
+				} `json:"m.in_reply_to"`
+			} `json:"m.relates_to"`
 		}
 		if json.Unmarshal(ev.Content, &raw) != nil || raw.MsgType == "m.notice" {
 			return nil
 		}
-		switch Command(raw.Body) {
+		switch commandOf(raw.Body, raw.RelatesTo.InReplyTo != nil) {
 		case "stop":
 			if err := b.st.SetMatrixEnabled(ctx, m.Subject, false); err != nil {
 				return err
@@ -244,6 +260,7 @@ func (b *Bot) event(ctx context.Context, room string, ev matrix.Event) error {
 		if json.Unmarshal(ev.Content, &c) != nil || (c.Membership != "leave" && c.Membership != "ban") {
 			return nil
 		}
+		defer b.lockSubject(m.Subject)()
 		if err := b.st.LeftMatrix(ctx, m.Subject, room); err != nil {
 			return err
 		}
@@ -288,8 +305,13 @@ func (b *Bot) invite(ctx context.Context, room string, state []matrix.Event) err
 		ok = false
 	}
 	if ok {
+		defer b.lockSubject(subject)()
 		if err := b.prepareAnswer(ctx, subject, masUser, sender); err != nil {
-			return err
+			if ctx.Err() != nil || errors.Is(err, ErrUnavailable) {
+				return err
+			}
+			slog.Warn("matrix bot: a member's invitation was rejected", "reason", reason(err))
+			ok = false
 		}
 	}
 	if err := b.cleanup(ctx, func() error { return b.m.Leave(ctx, room) }); err != nil || !ok {
@@ -320,8 +342,12 @@ func (b *Bot) inviterMember(ctx context.Context, sender string) (subject, masUse
 		return "", "", false, wrap(err)
 	}
 	member, err := b.members.IsMember(ctx, subject)
-	if err != nil || !member {
-		return "", "", false, err
+	if err != nil {
+		// Mbin could not say; the invitation waits rather than rejecting a member.
+		return "", "", false, fmt.Errorf("%w: the membership check failed: %w", ErrUnavailable, err)
+	}
+	if !member {
+		return "", "", false, nil
 	}
 	return subject, u.ID, true, nil
 }

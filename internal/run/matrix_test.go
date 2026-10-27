@@ -412,6 +412,21 @@ func TestRefusedIsNotRetried(t *testing.T) {
 	}
 }
 
+// A member who stopped the messages between Prepare and the send is left
+// unclaimed, so a start later the same day still reaches them.
+func TestOffAtDeliveryLeavesNoRow(t *testing.T) {
+	s := storetest.New(t)
+	dm := newDM()
+	dm.outcome["sub-2"] = bot.Off
+	if err := matrixRunner(s, newSource(), &mailtest.Recorder{}, dm).Week(context.Background(), week); err != nil {
+		t.Fatal(err)
+	}
+	st := dmStatuses(t, s, "2026-10-26")
+	if _, ok := st["sub-2"]; ok || len(st) != 2 {
+		t.Fatalf("dm_sends: %v", st)
+	}
+}
+
 func TestPrepareFalseLeavesNoRow(t *testing.T) {
 	s := storetest.New(t)
 	dm := newDM()
