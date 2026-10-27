@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"log/slog"
+	"strings"
 	"sync/atomic"
 	"time"
 
@@ -77,10 +78,16 @@ func superviseHeld(ctx context.Context, d Deps, h *Holder, lock *store.Lock) (of
 	for {
 		b, err := Start(ctx, d.Matrix, d.MAS, d.Store, d.Members, d.Config)
 		if errors.Is(err, ErrOff) {
-			slog.Error("Matrix is off", "reason", err.Error())
+			slog.Error("Matrix is off", "reason", strings.TrimPrefix(err.Error(), ErrOff.Error()+": "))
 			return true
 		}
 		if err == nil {
+			select {
+			case <-lock.Lost():
+				slog.Warn("matrix bot: the bot lock was lost")
+				return false
+			default:
+			}
 			h.bot.Store(b)
 			h.pending.Store(false)
 			lctx, cancel := context.WithCancel(ctx)
@@ -94,6 +101,7 @@ func superviseHeld(ctx context.Context, d Deps, h *Holder, lock *store.Lock) (of
 			}
 			cancel()
 			<-done
+			h.pending.Store(true)
 			h.bot.Store(nil)
 			return false
 		}

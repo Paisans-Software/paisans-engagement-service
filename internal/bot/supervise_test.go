@@ -34,7 +34,12 @@ func supervise(t *testing.T, d Deps, h *Holder) (done <-chan struct{}) {
 
 func eventually(t *testing.T, what string, f func() bool) {
 	t.Helper()
-	deadline := time.Now().Add(2 * time.Second)
+	eventuallyWithin(t, 2*time.Second, what, f)
+}
+
+func eventuallyWithin(t *testing.T, d time.Duration, what string, f func() bool) {
+	t.Helper()
+	deadline := time.Now().Add(d)
 	for time.Now().Before(deadline) {
 		if f() {
 			return
@@ -158,26 +163,31 @@ func TestSuperviseLockLossClearsAndRecovers(t *testing.T) {
 	supervise(t, e.deps(), &h)
 	eventually(t, "the bot", func() bool { return h.Get() != nil })
 	c := storetest.Conn(t, e.st)
-	// End the session holding the lock.
-	if _, err := c.Exec(context.Background(), `SELECT pg_terminate_backend(pid) FROM pg_locks WHERE locktype='advisory' AND granted AND pid <> pg_backend_pid()`); err != nil {
+	// End the session holding this schema's bot lock, and no other.
+	ctx := context.Background()
+	var key int64
+	if err := c.QueryRow(ctx, `SELECT $1::bigint # hashtextextended(current_schema(), 0)`, int64(0x656e676167650002)).Scan(&key); err != nil {
 		t.Fatal(err)
 	}
-	// The ping runs every 15s, so the loss is noticed late; the bot is
-	// back afterwards.
-	eventually2(t, 40*time.Second, "the loss to clear the holder", func() bool { return h.Get() == nil })
-	eventually2(t, 10*time.Second, "the bot again", func() bool { return h.Get() != nil })
-}
-
-func eventually2(t *testing.T, d time.Duration, what string, f func() bool) {
-	t.Helper()
-	deadline := time.Now().Add(d)
-	for time.Now().Before(deadline) {
-		if f() {
-			return
-		}
-		time.Sleep(5 * time.Millisecond)
+	var terminated bool
+	if err := c.QueryRow(ctx, `SELECT pg_terminate_backend(pid) FROM pg_locks
+		WHERE locktype='advisory' AND granted
+		AND ((classid::bigint << 32) | objid::bigint) = $1`, key).Scan(&terminated); err != nil || !terminated {
+		t.Fatalf("terminate: %v %v", terminated, err)
 	}
-	t.Fatalf("timed out waiting for %s", what)
+	// The ping runs every 15s, so the loss is noticed late; the bot is
+	// back afterwards. Until the next attempt the run must keep waiting.
+	eventuallyWithin(t, 40*time.Second, "the loss to clear the holder", func() bool { return h.Get() == nil })
+	if !h.Pending() {
+		t.Error("Pending false after the loss")
+	}
+	eventuallyWithin(t, 10*time.Second, "the bot again", func() bool {
+		if h.Get() == nil && !h.Pending() {
+			// Allowed only once another copy holds the lock; none does here.
+			t.Error("Pending false with no bot and no other copy")
+		}
+		return h.Get() != nil
+	})
 }
 
 func TestHolderZero(t *testing.T) {
