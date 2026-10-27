@@ -46,6 +46,7 @@ type Server struct {
 	Device        string // whoami's device_id
 	TokenEndpoint string // what auth_metadata returns
 	Down          atomic.Bool
+	UnauthCode    atomic.Value // errcode of a 401 from a rejected token; default M_UNKNOWN_TOKEN
 
 	serverName string
 	accept     func(token string) (user, device string, ok bool)
@@ -63,6 +64,8 @@ type Server struct {
 	members       map[string]map[string]string // room -> user -> membership
 	refuse        map[string]refusal
 	failState     *refusal
+	failSends     int
+	failSendCode  int
 	syncQ         []syncItem
 	syncSince     []string
 	syncQuery     url.Values
@@ -257,12 +260,12 @@ func (s *Server) handle(w http.ResponseWriter, r *http.Request) {
 	if accept != nil {
 		u, d, ok := accept(strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer "))
 		if !ok {
-			s.errorJSON(w, http.StatusUnauthorized, "M_UNKNOWN_TOKEN", "Unrecognised access token")
+			s.unauth(w)
 			return
 		}
 		whoUser, whoDevice = u, d
 	} else if r.Header.Get("Authorization") != "Bearer "+s.Token {
-		s.errorJSON(w, http.StatusUnauthorized, "M_UNKNOWN_TOKEN", "Unrecognised access token")
+		s.unauth(w)
 		return
 	}
 	seg := strings.Split(strings.TrimPrefix(path, "/_matrix/client/v3/"), "/")
@@ -331,6 +334,11 @@ func (s *Server) send(w http.ResponseWriter, r *http.Request, room, txn string) 
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.attempts++
+	if s.failSends > 0 {
+		s.failSends--
+		s.errorJSON(w, s.failSendCode, "", "failed")
+		return
+	}
 	if ref, ok := s.refuse[room]; ok {
 		s.errorJSON(w, ref.status, ref.errcode, "refused")
 		return
@@ -459,4 +467,19 @@ func (s *Server) ClearFailState() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.failState = nil
+}
+
+func (s *Server) unauth(w http.ResponseWriter) {
+	code, _ := s.UnauthCode.Load().(string)
+	if code == "" {
+		code = "M_UNKNOWN_TOKEN"
+	}
+	s.errorJSON(w, http.StatusUnauthorized, code, "Unrecognised access token")
+}
+
+// FailNextSends makes the next n send PUTs answer status.
+func (s *Server) FailNextSends(n, status int) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.failSends, s.failSendCode = n, status
 }

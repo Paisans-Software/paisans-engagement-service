@@ -71,11 +71,12 @@ func run(t *testing.T, e *env, b *Bot, batches int) {
 	t.Helper()
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
+	base := len(e.syn.SyncSince())
 	done := make(chan error, 1)
 	go func() { done <- b.Listen(ctx) }()
 	deadline := time.Now().Add(10 * time.Second)
 	for {
-		if len(e.syn.SyncSince()) > batches {
+		if len(e.syn.SyncSince()) > base+batches {
 			break // the call after the last batch means the last one was handled
 		}
 		if time.Now().After(deadline) {
@@ -116,9 +117,13 @@ func TestStopAndStart(t *testing.T) {
 	prime(t, e)
 	syncOf(e, b,
 		[2]string{"b1", joined(room, message("$1", "@one:example.org", "m.text", "STOP"))},
-		[2]string{"b2", joined(room, message("$2", "@one:example.org", "m.text", "stop"))},
-		[2]string{"b3", joined(room, message("$3", "@one:example.org", "m.text", "start"))})
-	run(t, e, b, 3)
+		[2]string{"b2", joined(room, message("$2", "@one:example.org", "m.text", "stop"))})
+	run(t, e, b, 2)
+	if enabled(t, e) {
+		t.Fatal("on after two stops")
+	}
+	syncOf(e, b, [2]string{"b3", joined(room, message("$3", "@one:example.org", "m.text", "start"))})
+	run(t, e, b, 1)
 	sends := e.syn.Sends()
 	if len(sends) != 3 || !enabled(t, e) {
 		t.Fatalf("sends=%d enabled=%v", len(sends), enabled(t, e))
@@ -173,8 +178,9 @@ func TestIgnoresNoticesSelfAndStrangers(t *testing.T) {
 func TestLeaveCountsAsStop(t *testing.T) {
 	e, b, room := memberRoom(t)
 	prime(t, e)
-	syncOf(e, b, [2]string{"b1", joined(room, memberEvent("$1", "@one:example.org", "@one:example.org", "leave"))})
-	run(t, e, b, 1)
+	syncOf(e, b, [2]string{"b1", joined(room, memberEvent("$1", "@one:example.org", "@one:example.org", "leave"))},
+		[2]string{"b2", `{}`})
+	run(t, e, b, 2)
 	ctx := context.Background()
 	m, _ := e.st.MatrixMember(ctx, "sub-1")
 	if m.Enabled || m.RoomID != "" {
@@ -298,4 +304,50 @@ func TestInitialSyncIgnoresTimeline(t *testing.T) {
 	if e.state(t, keySyncToken) != "b1" {
 		t.Fatal("token not stored")
 	}
+}
+
+func TestInviteReplyFailureDoesNotInviteAgain(t *testing.T) {
+	e, b, _ := memberRoom(t)
+	prime(t, e)
+	e.syn.AddRoom("!invite:example.org")
+	e.syn.FailNextSends(1, 503)
+	syncOf(e, b, [2]string{"b1", invited("!invite:example.org", "@one:example.org")}, [2]string{"b2", `{}`})
+	run(t, e, b, 2)
+	fresh := 0
+	for _, r := range e.syn.Rooms() {
+		if r.ID != "!invite:example.org" && r.ID != "!dm:example.org" {
+			fresh++
+		}
+		if r.ID == "!invite:example.org" && !r.Left {
+			t.Error("invite not rejected")
+		}
+	}
+	m, _ := e.st.MatrixMember(context.Background(), "sub-1")
+	if fresh != 1 || m.RoomID == "" || m.RoomID == "!dm:example.org" || !m.Enabled {
+		t.Fatalf("fresh=%d member=%+v", fresh, m)
+	}
+}
+
+func TestPoisonInviteDoesNotStopListener(t *testing.T) {
+	e, b, room := memberRoom(t)
+	prime(t, e)
+	e.syn.AddRoom("!invite:example.org")
+	e.mas.FailUsernames.Store(400)
+	syncOf(e, b, [2]string{"b1", poisonBatch(room)})
+	run(t, e, b, 1)
+	if enabled(t, e) || e.state(t, keySyncToken) != "b1" {
+		t.Fatalf("enabled=%v token=%q", enabled(t, e), e.state(t, keySyncToken))
+	}
+	for _, r := range e.syn.Rooms() {
+		if r.ID == "!invite:example.org" && !r.Left {
+			t.Error("invite not rejected")
+		}
+	}
+}
+
+func poisonBatch(room string) string {
+	inv := invited("!invite:example.org", "@one:example.org")
+	inv = strings.TrimSuffix(strings.TrimPrefix(inv, `{"rooms":{`), `}}`)
+	return `{"rooms":{` + inv + `,"join":{"` + room + `":{"timeline":{"events":[` +
+		message("$1", "@one:example.org", "m.text", "stop") + `]}}}}}`
 }

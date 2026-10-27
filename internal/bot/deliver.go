@@ -131,18 +131,21 @@ func (b *Bot) newRoom(ctx context.Context, t Target) (string, error) {
 	var enc bool
 	if err := b.call(ctx, func() (e error) { enc, e = b.m.Encrypted(ctx, room); return }); err != nil {
 		if refused(err) {
-			if ferr := b.st.ForgetMatrixRoom(ctx, t.Subject, room); ferr != nil {
+			ferr := b.st.ForgetMatrixRoom(ctx, t.Subject, room)
+			b.abandon(ctx, room)
+			if ferr != nil {
 				return "", ferr
 			}
-			b.abandon(ctx, room)
 		}
 		return "", err
 	}
 	if enc {
-		if err := b.st.ForgetMatrixRoom(ctx, t.Subject, room); err != nil {
-			return "", err
-		}
+		// Leave the room whatever the store says, so a later send cannot reach it.
+		ferr := b.st.ForgetMatrixRoom(ctx, t.Subject, room)
 		b.abandon(ctx, room)
+		if ferr != nil {
+			return "", errors.Join(ErrEncrypted, ferr)
+		}
 		return "", ErrEncrypted
 	}
 	return room, nil

@@ -269,19 +269,29 @@ func (b *Bot) renew(ctx context.Context) error {
 }
 
 // call runs fn and, when the homeserver refuses the token, renews it and runs
-// fn once more.
+// fn once more. A token that is still refused after renewal, or a renewal MAS
+// refuses, is the bot's trouble and not the caller's subject's: it comes back
+// as ErrUnavailable so the caller releases its work and tries again later.
 func (b *Bot) call(ctx context.Context, fn func() error) error {
 	err := fn()
-	if !matrix.IsCode(err, "M_UNKNOWN_TOKEN") {
+	if !unauthorized(err) {
 		return wrap(err)
 	}
 	if err := b.renew(ctx); err != nil {
-		return wrap(err)
+		if errors.Is(err, ctx.Err()) && ctx.Err() != nil {
+			return err
+		}
+		return fmt.Errorf("%w: the bot's token could not be renewed: %w", ErrUnavailable, err)
 	}
 	err = fn()
-	if matrix.IsCode(err, "M_UNKNOWN_TOKEN") {
-		// A fresh token is refused too: the trouble is the bot's, not the member's.
+	if unauthorized(err) {
 		return fmt.Errorf("%w: the homeserver refuses the bot's token", ErrUnavailable)
 	}
 	return wrap(err)
+}
+
+// unauthorized reports whether err is a 401 of any errcode.
+func unauthorized(err error) bool {
+	var e *matrix.Error
+	return errors.As(err, &e) && (e.Status == 401 || e.Code == "M_UNKNOWN_TOKEN")
 }

@@ -254,3 +254,29 @@ func TestRejectedBotTokenIsNotARefusal(t *testing.T) {
 		t.Fatalf("member = %+v", m)
 	}
 }
+
+func TestRepeatedUnauthorizedIsUnavailable(t *testing.T) {
+	for name, setup := range map[string]func(*env){
+		"missing token code": func(e *env) { e.syn.UnauthCode.Store("M_MISSING_TOKEN") },
+		"renewal refused":    func(e *env) { e.mas.RefuseSessions.Store(403) },
+	} {
+		t.Run(name, func(t *testing.T) {
+			e, b := started(t)
+			ctx := context.Background()
+			tg := prepared(t, e, b)
+			if _, err := b.Deliver(ctx, tg, "t1", note()); err != nil {
+				t.Fatal(err)
+			}
+			tg, _, _ = b.Prepare(ctx, "sub-1")
+			e.syn.Accept(func(string) (string, string, bool) { return "", "", false })
+			setup(e)
+			out, err := b.Deliver(ctx, tg, "t2", note())
+			if !errors.Is(err, ErrUnavailable) || out != 0 {
+				t.Fatal(out, err)
+			}
+			if m, _ := e.st.MatrixMember(ctx, "sub-1"); m.RoomID == "" || !m.Enabled {
+				t.Fatalf("member = %+v", m)
+			}
+		})
+	}
+}

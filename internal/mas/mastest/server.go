@@ -34,6 +34,10 @@ type Server struct {
 	VersionString string
 	// Down makes every route answer 503.
 	Down atomic.Bool
+	// FailUsernames, when not zero, is the status the by-username lookup answers.
+	FailUsernames atomic.Int32
+	// RefuseSessions, when not zero, is the status personal-session routes answer.
+	RefuseSessions atomic.Int32
 
 	mu        sync.Mutex
 	srv       *httptest.Server
@@ -219,6 +223,14 @@ func (s *Server) handleAdmin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	path := strings.TrimPrefix(r.URL.Path, "/api/admin/v1/")
+	if st := s.FailUsernames.Load(); st != 0 && strings.HasPrefix(path, "users/by-username/") {
+		writeJSON(w, int(st), map[string]any{"errors": []map[string]string{{"title": "refused"}}})
+		return
+	}
+	if st := s.RefuseSessions.Load(); st != 0 && strings.HasPrefix(path, "personal-sessions") {
+		writeJSON(w, int(st), map[string]any{"errors": []map[string]string{{"title": "refused"}}})
+		return
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	switch {

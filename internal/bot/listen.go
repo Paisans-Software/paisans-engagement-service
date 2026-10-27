@@ -52,8 +52,8 @@ func reason(err error) string {
 // logged and retried with a wait that doubles from 1s to 1 minute.
 func (b *Bot) Listen(ctx context.Context) error {
 	since, _, err := b.st.BotState(ctx, keySyncToken)
-	for err != nil {
-		if err := pause(ctx, err, minBackoff); err != nil {
+	for wait := minBackoff; err != nil; wait = min(wait*2, maxBackoff) {
+		if err := pause(ctx, err, wait); err != nil {
 			return err
 		}
 		since, _, err = b.st.BotState(ctx, keySyncToken)
@@ -63,13 +63,6 @@ func (b *Bot) Listen(ctx context.Context) error {
 	for ctx.Err() == nil {
 		var resp *matrix.SyncResponse
 		err := b.call(ctx, func() (e error) { resp, e = b.m.Sync(ctx, since, syncTimeout); return })
-		if matrix.IsCode(err, "M_UNKNOWN_POS") {
-			// The homeserver no longer knows the stored position; start over.
-			if err = b.st.DeleteBotState(ctx, keySyncToken); err == nil {
-				since, initial = "", true
-				continue
-			}
-		}
 		if err == nil {
 			err = b.handle(ctx, resp, initial)
 		}
@@ -83,9 +76,7 @@ func (b *Bot) Listen(ctx context.Context) error {
 			if err := pause(ctx, err, wait); err != nil {
 				return err
 			}
-			if wait *= 2; wait > maxBackoff {
-				wait = maxBackoff
-			}
+			wait = min(wait*2, maxBackoff)
 			continue
 		}
 		wait = minBackoff
@@ -141,11 +132,22 @@ func (b *Bot) leaveAndForget(ctx context.Context, room string) error {
 	return b.cleanup(ctx, func() error { return b.m.Forget(ctx, room) })
 }
 
+// guard keeps one event that cannot be handled from stopping the listener:
+// only an unavailable homeserver or MAS, or the end of ctx, is returned for
+// the batch to be tried again. Anything else is logged and the event skipped.
+func guard(ctx context.Context, err error) error {
+	if err == nil || ctx.Err() != nil || errors.Is(err, ErrUnavailable) {
+		return err
+	}
+	log.Printf("matrix bot: an event was skipped: %s", reason(err))
+	return nil
+}
+
 // handle acts on one /sync batch. With initial set only invitations are
 // answered: the timeline of a first sync is history.
 func (b *Bot) handle(ctx context.Context, r *matrix.SyncResponse, initial bool) error {
 	for room, inv := range r.Rooms.Invite {
-		if err := b.invite(ctx, room, inv.InviteState.Events); err != nil {
+		if err := guard(ctx, b.invite(ctx, room, inv.InviteState.Events)); err != nil {
 			return err
 		}
 	}
@@ -154,7 +156,7 @@ func (b *Bot) handle(ctx context.Context, r *matrix.SyncResponse, initial bool) 
 	}
 	for room, j := range r.Rooms.Join {
 		for _, ev := range j.Timeline.Events {
-			if err := b.event(ctx, room, ev); err != nil {
+			if err := guard(ctx, b.event(ctx, room, ev)); err != nil {
 				return err
 			}
 		}
@@ -165,7 +167,7 @@ func (b *Bot) handle(ctx context.Context, r *matrix.SyncResponse, initial bool) 
 			return err
 		}
 		if ok {
-			if err := b.st.ForgetMatrixRoom(ctx, m.Subject, room); err != nil {
+			if err := guard(ctx, b.st.ForgetMatrixRoom(ctx, m.Subject, room)); err != nil {
 				return err
 			}
 		}
@@ -242,23 +244,39 @@ func (b *Bot) inviter(events []matrix.Event) (sender, eventID string) {
 }
 
 // invite answers an invitation: a member's gets a fresh room, any other is
-// rejected. The invitation is rejected last, so a failure before that is
-// retried with the invitation still in the next sync.
+// rejected. The eligibility lookups come first, so a failure of MAS or Mbin is
+// retried with the invitation still pending. The invitation is rejected
+// before the room is made; after that a failure can only lose the greeting,
+// and a replayed batch cannot invite the member a second time.
 func (b *Bot) invite(ctx context.Context, room string, state []matrix.Event) error {
 	sender, eventID := b.inviter(state)
 	if eventID == "" {
 		eventID = room // stripped state carries no event id
 	}
 	subject, masUser, ok, err := b.inviterMember(ctx, sender)
-	if err != nil {
+	if err != nil && (ctx.Err() != nil || errors.Is(err, ErrUnavailable)) {
 		return err
 	}
+	if err != nil {
+		log.Printf("matrix bot: an invitation was rejected: %s", reason(err))
+		ok = false
+	}
 	if ok {
-		if err := b.answerInvite(ctx, subject, masUser, sender, eventID); err != nil {
+		if err := b.prepareAnswer(ctx, subject, masUser, sender); err != nil {
 			return err
 		}
 	}
-	return b.cleanup(ctx, func() error { return b.m.Leave(ctx, room) })
+	if err := b.cleanup(ctx, func() error { return b.m.Leave(ctx, room) }); err != nil || !ok {
+		return err
+	}
+	fresh, err := b.newRoom(ctx, Target{Subject: subject, UserID: sender})
+	if err == nil {
+		err = b.reply(ctx, fresh, eventID, ReplyStarted)
+	}
+	if err != nil {
+		log.Printf("matrix bot: a member's room could not be greeted: %s", reason(err))
+	}
+	return nil
 }
 
 // inviterMember finds the current member behind a local Matrix id.
@@ -282,8 +300,8 @@ func (b *Bot) inviterMember(ctx context.Context, sender string) (subject, masUse
 	return subject, u.ID, true, nil
 }
 
-// answerInvite replaces the member's room with a fresh one and says hello there.
-func (b *Bot) answerInvite(ctx context.Context, subject, masUser, userID, eventID string) error {
+// prepareAnswer drops the member's old room and records them as on.
+func (b *Bot) prepareAnswer(ctx context.Context, subject, masUser, userID string) error {
 	old, err := b.st.MatrixMember(ctx, subject)
 	if err != nil {
 		return err
@@ -299,16 +317,5 @@ func (b *Bot) answerInvite(ctx context.Context, subject, masUser, userID, eventI
 	if err := b.st.SetMatrixAccount(ctx, subject, masUser, userID); err != nil {
 		return err
 	}
-	if err := b.st.SetMatrixEnabled(ctx, subject, true); err != nil {
-		return err
-	}
-	fresh, err := b.newRoom(ctx, Target{Subject: subject, UserID: userID})
-	if errors.Is(err, ErrEncrypted) || refused(err) {
-		log.Printf("matrix bot: a member's room could not be made: %s", reason(err))
-		return nil
-	}
-	if err != nil {
-		return err
-	}
-	return b.reply(ctx, fresh, eventID, ReplyStarted)
+	return b.st.SetMatrixEnabled(ctx, subject, true)
 }
