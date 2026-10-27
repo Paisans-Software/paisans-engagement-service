@@ -27,6 +27,16 @@ func main() {
 		os.Exit(healthcheck(os.Getenv("ENGAGEMENT_LISTEN_ADDR")))
 	}
 	slog.SetDefault(slog.New(slog.NewJSONHandler(os.Stdout, nil)))
+	if len(os.Args) > 1 && os.Args[1] == "send" {
+		ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+		err := send(ctx, os.Args[2:], os.Getenv, time.Now)
+		stop()
+		if err != nil {
+			slog.Error("digest send failed", "error", err)
+			os.Exit(1)
+		}
+		return
+	}
 	if err := serve(); err != nil {
 		slog.Error("exiting", "error", err)
 		os.Exit(1)
