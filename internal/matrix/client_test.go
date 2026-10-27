@@ -142,6 +142,24 @@ func TestPacingSpacesSends(t *testing.T) {
 	}
 }
 
+// A paced call whose wait would outlast the context's deadline returns at
+// once, as the deadline passing would.
+func TestPacingWaitPastDeadline(t *testing.T) {
+	c, _, _ := newClient(t, Pacing{MessagesPerSecond: 0.001, MessageBurst: 1, RoomsPerSecond: 1000, RoomBurst: 1000})
+	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+	defer cancel()
+	call := func() error {
+		return c.do(ctx, "GET", "/_matrix/client/v3/account/whoami", []*rate.Limiter{c.messages}, nil, nil)
+	}
+	if err := call(); err != nil {
+		t.Fatal(err)
+	}
+	err := call()
+	if !errors.Is(err, context.DeadlineExceeded) || ctx.Err() != nil {
+		t.Fatalf("err = %v, ctx = %v", err, ctx.Err())
+	}
+}
+
 func TestSetDisplayNameIsNotPaced(t *testing.T) {
 	c, srv, _ := newClient(t, Pacing{MessagesPerSecond: 0.001, MessageBurst: 1, RoomsPerSecond: 0.001, RoomBurst: 1})
 	start := time.Now()

@@ -1,12 +1,15 @@
 package run_test
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -29,7 +32,8 @@ type delivery struct {
 
 // fakeDM records every delivery. Subjects in skip are not messageable;
 // outcome and err script what Deliver returns for a subject; prepareErr
-// fails Prepare for a subject; block makes Deliver wait for its context.
+// fails Prepare for a subject; block makes Deliver wait for its context;
+// after, when set, is called after each delivery.
 type fakeDM struct {
 	mu         sync.Mutex
 	skip       map[string]bool
@@ -39,6 +43,7 @@ type fakeDM struct {
 	block      bool
 	prepared   []string
 	delivered  []delivery
+	after      func(subject string)
 }
 
 func newDM() *fakeDM {
@@ -69,6 +74,9 @@ func (f *fakeDM) Deliver(ctx context.Context, t bot.Target, txnID string, n bot.
 		return 0, err
 	}
 	f.delivered = append(f.delivered, delivery{t.Subject, txnID, n})
+	if f.after != nil {
+		f.after(t.Subject)
+	}
 	if o, ok := f.outcome[t.Subject]; ok {
 		return o, nil
 	}
@@ -433,6 +441,116 @@ func TestNoBotOnThisCopy(t *testing.T) {
 	}
 }
 
+// A copy that had no bot when its run went out still sends the Matrix
+// notices if it takes the bot over later the same day, without reading Mbin
+// or mailing anyone again.
+func TestLoopSendsDMsWhenBotArrivesLater(t *testing.T) {
+	s := storetest.New(t)
+	src := newSource()
+	rec, dm := &mailtest.Recorder{}, newDM()
+	r := matrixRunner(s, src, rec, dm)
+	var here atomic.Bool
+	r.Matrix = func() run.DM {
+		if !here.Load() {
+			return nil
+		}
+		return dm
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	defer func() { cancel(); <-done }()
+	c := newClock(onSendDay())
+	go func() {
+		run.Loop(ctx, r, c.now, time.Millisecond)
+		close(done)
+	}()
+	deadline := time.Now().Add(5 * time.Second)
+	for len(rec.Sent()) < 3 {
+		if time.Now().After(deadline) {
+			t.Fatalf("%d emails", len(rec.Sent()))
+		}
+		time.Sleep(time.Millisecond)
+	}
+	c.waitTicks(t, 5)
+	if n := len(dm.deliveries()); n != 0 {
+		t.Fatalf("%d deliveries without a bot", n)
+	}
+	here.Store(true)
+	for len(dm.deliveries()) < 3 {
+		if time.Now().After(deadline) {
+			t.Fatalf("deliveries: %v", dm.subjects())
+		}
+		time.Sleep(time.Millisecond)
+	}
+	c.waitTicks(t, 5)
+	if n := len(dm.deliveries()); n != 3 {
+		t.Fatalf("%d deliveries", n)
+	}
+	if h := src.hots.Load(); h != 1 {
+		t.Fatalf("Mbin read %d times", h)
+	}
+	if n := len(rec.Sent()); n != 3 {
+		t.Fatalf("%d emails", n)
+	}
+}
+
+// A copy that loses the bot during its Matrix pass stops sending at once;
+// the members left are reached by the copy that holds the bot now.
+func TestBotLostDuringPass(t *testing.T) {
+	s := storetest.New(t)
+	dm := newDM()
+	r := matrixRunner(s, newSource(), &mailtest.Recorder{}, dm)
+	var lost atomic.Bool
+	r.Matrix = func() run.DM {
+		if lost.Load() {
+			return nil
+		}
+		return dm
+	}
+	dm.after = func(string) { lost.Store(true) }
+	if err := r.Week(context.Background(), week); err != nil {
+		t.Fatal(err)
+	}
+	if got := dm.subjects(); len(got) != 1 || got[0] != "sub-1" {
+		t.Fatalf("deliveries: %v", got)
+	}
+	if st := dmStatuses(t, s, "2026-10-26"); len(st) != 1 {
+		t.Fatalf("dm_sends: %v", st)
+	}
+	other := newDM()
+	r.Matrix = func() run.DM { return other }
+	if err := r.Week(context.Background(), week); err != nil {
+		t.Fatal(err)
+	}
+	if got := other.subjects(); strings.Join(got, ",") != "sub-2,sub-3" {
+		t.Fatalf("deliveries by the new holder: %v", got)
+	}
+}
+
+// A rate limit wait that would outlast the send day ends the pass as the
+// day does: no error and no warning about the member.
+func TestRateWaitPastDayEnd(t *testing.T) {
+	var logs bytes.Buffer
+	prev := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&logs, nil)))
+	defer slog.SetDefault(prev)
+	s := storetest.New(t)
+	dm := newDM()
+	dm.err["sub-1"] = fmt.Errorf("matrix PUT /send: the rate limit wait outlasts the deadline: %w", context.DeadlineExceeded)
+	if err := matrixRunner(s, newSource(), &mailtest.Recorder{}, dm).Week(context.Background(), week); err != nil {
+		t.Fatalf("Week: %v", err)
+	}
+	if len(dm.prepared) != 1 {
+		t.Fatalf("prepared %v", dm.prepared)
+	}
+	if n := countRows(t, s, `SELECT count(*) FROM dm_sends`); n != 0 {
+		t.Fatalf("%d dm_sends rows", n)
+	}
+	if strings.Contains(logs.String(), "matrix notice not sent") || !strings.Contains(logs.String(), "the send day is over") {
+		t.Fatalf("logs: %s", logs.String())
+	}
+}
+
 // A bot that is still starting is waited for: the run fails so it is tried
 // again, and the email already sent is not sent twice.
 func TestBotStillStarting(t *testing.T) {
@@ -459,6 +577,19 @@ func TestBotStillStarting(t *testing.T) {
 	}
 	if len(rec.Messages) != 3 || len(dm.deliveries()) != 3 {
 		t.Fatalf("%d emails, deliveries %v", len(rec.Messages), dm.subjects())
+	}
+}
+
+// Once the send day is over a bot still starting no longer fails the run:
+// there is nothing left for it to send.
+func TestBotStillStartingAfterDayEnd(t *testing.T) {
+	s := storetest.New(t)
+	r := matrixRunner(s, newSource(), &mailtest.Recorder{}, nil)
+	r.Matrix = func() run.DM { return nil }
+	r.MatrixPending = func() bool { return true }
+	r.Now = func() time.Time { return time.Date(2026, 10, 27, 0, 0, 0, 0, time.UTC) }
+	if err := r.Week(context.Background(), week); err != nil {
+		t.Fatalf("Week: %v", err)
 	}
 }
 

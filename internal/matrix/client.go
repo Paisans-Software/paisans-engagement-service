@@ -140,7 +140,12 @@ func (c *Client) doTpl(ctx context.Context, method, tpl, path string, limiters [
 	for {
 		for _, l := range limiters {
 			if err := l.Wait(ctx); err != nil {
-				return err
+				if cerr := ctx.Err(); cerr != nil {
+					return cerr
+				}
+				// The limiter refuses up front a wait that would end after
+				// ctx's deadline.
+				return fmt.Errorf("matrix %s: the paced wait outlasts the deadline: %w", op, context.DeadlineExceeded)
 			}
 		}
 		var rd io.Reader

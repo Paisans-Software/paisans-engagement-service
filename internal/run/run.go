@@ -87,25 +87,64 @@ func (r *Runner) now() time.Time {
 // releases their claim, and Week returns the error. A bot still starting
 // fails the pass, so the next attempt delivers once it is up.
 //
-// Both passes always run; Week returns their errors joined.
+// Both passes always run; Week returns their errors joined. A copy that runs
+// no Digest Bot, while another copy holds it, skips the Matrix pass without an
+// error; Loop sends it later the same day if this copy takes the bot over.
 func (r *Runner) Week(ctx context.Context, week time.Time) error {
+	_, err := r.week(ctx, week)
+	return err
+}
+
+// matrixHalf is what the Matrix pass of a week needs once the email pass is
+// done, kept for a copy that had no bot when the week ran.
+type matrixHalf struct {
+	members  []digest.Member
+	matrixOn map[string]bool
+}
+
+// week is Week. The matrixHalf is not nil when the Matrix pass was skipped,
+// or stopped, because this copy runs no bot.
+func (r *Runner) week(ctx context.Context, week time.Time) (*matrixHalf, error) {
 	from := week.AddDate(0, 0, -7)
 	// Everything shared is read before anyone is claimed, so an outage of
 	// Mbin leaves every member to the next attempt.
 	members, err := r.Source.Members(ctx)
 	if err != nil {
-		return fmt.Errorf("read members: %w", err)
+		return nil, fmt.Errorf("read members: %w", err)
 	}
 	items, err := r.Source.Hot(ctx, from, week)
 	if err != nil {
-		return fmt.Errorf("read the week's threads: %w", err)
+		return nil, fmt.Errorf("read the week's threads: %w", err)
 	}
 	stats, err := r.Source.Stats(ctx, from, week)
 	if err != nil {
-		return fmt.Errorf("read the week's figures: %w", err)
+		return nil, fmt.Errorf("read the week's figures: %w", err)
 	}
 	matrixOn, emailErr := r.emailPass(ctx, members, from, week, items, stats)
-	return errors.Join(emailErr, r.matrixPass(ctx, members, week, matrixOn))
+	noBot, matrixErr := r.matrixPass(ctx, members, week, matrixOn)
+	var later *matrixHalf
+	if noBot {
+		later = &matrixHalf{members: members, matrixOn: matrixOn}
+	}
+	return later, errors.Join(emailErr, matrixErr)
+}
+
+// bot is the Digest Bot this copy runs, or nil.
+func (r *Runner) bot() DM {
+	if r.Matrix == nil {
+		return nil
+	}
+	return r.Matrix()
+}
+
+// noBot handles a missing bot: one still starting on this copy is an error,
+// so the run is tried again; one that another copy runs is not.
+func (r *Runner) noBot() error {
+	if r.MatrixPending != nil && r.MatrixPending() {
+		slog.Warn("the Digest Bot is still starting; the Matrix notices wait for the next attempt")
+		return fmt.Errorf("matrix run: %w", ErrBotNotReady)
+	}
+	return nil
 }
 
 // emailPass mails every member who has a verified address and builds the
@@ -293,24 +332,28 @@ func (r *Runner) digestFor(ctx context.Context, m digest.Member, from, week time
 }
 
 // matrixPass sends the Monday notice to every member in members whose
-// notice is on and who has a stored digest for the week.
-func (r *Runner) matrixPass(ctx context.Context, members []digest.Member, week time.Time, matrixOn map[string]bool) error {
+// notice is on and who has a stored digest for the week. noBot is true when
+// the pass was skipped or stopped because this copy runs no bot, or runs a
+// different one than the pass began with, and the send day is not over.
+func (r *Runner) matrixPass(ctx context.Context, members []digest.Member, week time.Time, matrixOn map[string]bool) (noBot bool, err error) {
 	if !r.MatrixConfigured {
-		return nil
+		return false, nil
 	}
-	var dm DM
-	if r.Matrix != nil {
-		dm = r.Matrix()
+	// The send day ends at local midnight after week, in week's location.
+	y, mo, d := week.Date()
+	end := time.Date(y, mo, d+1, 0, 0, 0, 0, week.Location())
+	now := r.now()
+	if !now.Before(end) {
+		slog.Info("the send day is over; no Matrix notices are sent", "week", week.Format("2006-01-02"))
+		return false, nil
 	}
+	dm := r.bot()
 	if dm == nil {
-		if r.MatrixPending != nil && r.MatrixPending() {
-			slog.Warn("the Digest Bot is still starting; the Matrix notices wait for the next attempt")
-			return fmt.Errorf("matrix run: %w", ErrBotNotReady)
-		}
-		return nil
+		err := r.noBot()
+		return err == nil, err
 	}
 
-	var n struct{ sent, refused, unreachable, released, skipped int }
+	var n struct{ sent, refused, noAccount, released, skipped int }
 	var firstErr error
 	fail := func(err error) {
 		if firstErr == nil {
@@ -319,36 +362,40 @@ func (r *Runner) matrixPass(ctx context.Context, members []digest.Member, week t
 	}
 	defer func() {
 		slog.Info("matrix run", "week", week.Format("2006-01-02"), "sent", n.sent, "refused", n.refused,
-			"unreachable", n.unreachable, "released", n.released, "skipped", n.skipped)
+			"no_account", n.noAccount, "released", n.released, "skipped", n.skipped)
 	}()
 
-	// The send day ends at local midnight after week, in week's location.
-	y, mo, d := week.Date()
-	end := time.Date(y, mo, d+1, 0, 0, 0, 0, week.Location())
-	now := r.now()
-	if !now.Before(end) {
-		slog.Info("the send day is over; no Matrix notices are sent", "week", week.Format("2006-01-02"))
-		return nil
-	}
-	// Waits for the homeserver's rate limits end with the day too.
+	// Waits for the homeserver's rate limits end with the day too. A wait
+	// that would outlast the day ends early with context.DeadlineExceeded
+	// while dctx itself is still live, and that too is the day ending.
 	dctx, cancel := context.WithTimeout(ctx, end.Sub(now))
 	defer cancel()
-	dayOver := func() bool { return ctx.Err() == nil && (dctx.Err() != nil || !r.now().Before(end)) }
+	ended := false
+	dayOver := func(err error) bool {
+		if ctx.Err() == nil && (dctx.Err() != nil || !r.now().Before(end) || errors.Is(err, context.DeadlineExceeded)) {
+			ended = true
+		}
+		return ended
+	}
+	defer func() {
+		if ended {
+			slog.Info("the send day is over; the remaining Matrix notices are not sent", "week", week.Format("2006-01-02"))
+		}
+	}()
 
 	saved, err := r.Store.DigestsForWeek(dctx, week)
 	if err != nil {
-		if dayOver() {
-			slog.Info("the send day is over; no Matrix notices are sent", "week", week.Format("2006-01-02"))
-			return nil
+		if dayOver(err) {
+			return false, nil
 		}
-		return fmt.Errorf("read the week's digests: %w", err)
+		return false, fmt.Errorf("read the week's digests: %w", err)
 	}
 
 	// stop handles an error from the bot and reports whether the pass ends
 	// with it. The member id identifies the row in Mbin without naming them.
 	stop := func(m digest.Member, err error) bool {
 		switch {
-		case dayOver():
+		case dayOver(err):
 			return true
 		case ctx.Err() != nil:
 			fail(ctx.Err())
@@ -365,7 +412,7 @@ func (r *Runner) matrixPass(ctx context.Context, members []digest.Member, week t
 	}
 
 	for _, m := range members {
-		if dayOver() {
+		if dayOver(nil) {
 			break
 		}
 		if err := ctx.Err(); err != nil {
@@ -375,6 +422,16 @@ func (r *Runner) matrixPass(ctx context.Context, members []digest.Member, week t
 		raw, ok := saved[m.Subject]
 		if !ok || !matrixOn[m.Subject] {
 			continue
+		}
+		// The bot lock may have moved since the pass began; only the copy
+		// that holds it now sends.
+		if cur := r.bot(); cur != dm {
+			slog.Info("the Digest Bot changed during the Matrix run; the remaining notices wait for it", "week", week.Format("2006-01-02"))
+			if err := r.noBot(); err != nil {
+				fail(err)
+				return false, firstErr
+			}
+			return true, firstErr
 		}
 		var dg digest.Digest
 		if err := json.Unmarshal(raw, &dg); err != nil {
@@ -389,12 +446,12 @@ func (r *Runner) matrixPass(ctx context.Context, members []digest.Member, week t
 			continue
 		}
 		if !ok {
-			n.unreachable++
+			n.noAccount++
 			continue
 		}
 		ok, err = r.Store.ClaimDM(dctx, m.Subject, week)
 		if err != nil {
-			if dayOver() {
+			if dayOver(err) {
 				break
 			}
 			fail(fmt.Errorf("claim a Matrix send: %w", err))
@@ -436,10 +493,7 @@ func (r *Runner) matrixPass(ctx context.Context, members []digest.Member, week t
 		}
 		wcancel()
 	}
-	if dayOver() {
-		slog.Info("the send day is over; the remaining Matrix notices are not sent", "week", week.Format("2006-01-02"))
-	}
-	return firstErr
+	return false, firstErr
 }
 
 // sent is every thread the digest shows.
@@ -468,18 +522,23 @@ func purge(ctx context.Context, st *store.Store, now time.Time) {
 		slog.Error("expired web digests not deleted", "error", err)
 		return
 	}
-	slog.Info("expired web digests deleted", "count", n)
+	if n > 0 {
+		slog.Info("expired web digests deleted", "count", n)
+	}
 }
 
 // Loop checks every tick whether a week is due and runs it until it succeeds
 // once. After a failed run the wait doubles, up to maxBackoff, so an outage
 // that lasts all day does not re-read Mbin every tick; it is back to one tick
-// once no week is due. The weeks that
-// succeeded are remembered only in memory: after a restart, the claims in the
-// store keep a rerun from mailing anyone twice. At most once an hour it also
-// deletes the web digests that have expired.
+// once no week is due. A week whose Matrix pass found no bot on this copy is
+// not done: once this copy runs the bot, the same day, Loop sends the Matrix
+// notices, without reading Mbin or running the email pass again. The weeks
+// that succeeded are remembered only in memory: after a restart, the claims
+// in the store keep a rerun from mailing anyone twice. At most once an hour it
+// also deletes the web digests that have expired.
 func Loop(ctx context.Context, r *Runner, now func() time.Time, tick time.Duration) {
 	done := map[string]bool{}
+	later := map[string]*matrixHalf{}
 	backoff := tick
 	var purged time.Time
 	t := time.NewTimer(tick)
@@ -493,20 +552,46 @@ func Loop(ctx context.Context, r *Runner, now func() time.Time, tick time.Durati
 		wait := tick
 		if week, ok := Due(at); ok {
 			k := week.Format("2006-01-02")
-			if !done[k] {
-				if err := r.Week(ctx, week); err != nil {
-					slog.Error("digest run failed; it is retried until the day ends", "error", err, "retry_in", backoff.String())
-					wait = backoff
-					backoff = min(2*backoff, maxBackoff)
-				} else {
-					done[k] = true
-					backoff = tick
+			var (
+				half *matrixHalf
+				err  error
+				ran  = true
+			)
+			switch {
+			case done[k]:
+				ran = false
+			case later[k] != nil:
+				if r.bot() == nil {
+					ran = false
+					break
 				}
+				var noBot bool
+				noBot, err = r.matrixPass(ctx, later[k].members, week, later[k].matrixOn)
+				if noBot {
+					half = later[k]
+				}
+			default:
+				half, err = r.week(ctx, week)
+			}
+			switch {
+			case !ran:
+			case err != nil:
+				slog.Error("digest run failed; it is retried until the day ends", "error", err, "retry_in", backoff.String())
+				wait = backoff
+				backoff = min(2*backoff, maxBackoff)
+			case half != nil:
+				later[k] = half
+				backoff = tick
+			default:
+				done[k] = true
+				delete(later, k)
+				backoff = tick
 			}
 		} else {
 			// The day is over, so the next one starts from a short wait
 			// whether this one ended in success or not.
 			backoff = tick
+			clear(later)
 		}
 		t.Reset(wait)
 		select {

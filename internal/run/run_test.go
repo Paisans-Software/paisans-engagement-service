@@ -663,3 +663,37 @@ func TestLoopPurgesExpired(t *testing.T) {
 		t.Fatalf("current digest gone (%v, %v)", ok, err)
 	}
 }
+
+// A purge that deletes nothing logs nothing.
+func TestLoopPurgeQuietWhenNothingExpired(t *testing.T) {
+	var logs bytes.Buffer
+	prev := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&syncWriter{w: &logs}, nil)))
+	defer slog.SetDefault(prev)
+	s := storetest.New(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	c := newClock(week.Add(-time.Hour))
+	go func() {
+		run.Loop(ctx, runner(s, newSource(), &mailtest.Recorder{}), c.now, time.Millisecond)
+		close(done)
+	}()
+	c.waitTicks(t, 2)
+	cancel()
+	<-done
+	if strings.Contains(logs.String(), "expired web digests deleted") {
+		t.Fatalf("logs: %s", logs.String())
+	}
+}
+
+// syncWriter serialises writes from Loop's goroutine and the test.
+type syncWriter struct {
+	mu sync.Mutex
+	w  *bytes.Buffer
+}
+
+func (s *syncWriter) Write(p []byte) (int, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.w.Write(p)
+}
