@@ -65,6 +65,11 @@ type Bot struct {
 	userID  string
 
 	mu sync.Mutex // serialises token renewal
+
+	// attempts counts, per event, the batches Listen tried that failed on it.
+	attempts map[string]int
+	// wait replaces Listen's wait between attempts; nil waits for real.
+	wait func(ctx context.Context, d time.Duration) error
 }
 
 // UserID is "@<localpart>:<server_name>".

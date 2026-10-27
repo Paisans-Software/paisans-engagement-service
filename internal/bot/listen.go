@@ -6,7 +6,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
-	"log"
+	"log/slog"
 	"strings"
 	"time"
 	"unicode"
@@ -18,6 +18,11 @@ const (
 	syncTimeout = 30 * time.Second
 	minBackoff  = time.Second
 	maxBackoff  = time.Minute
+	// maxAttempts is how many times a batch is tried for one event that
+	// fails for a reason other than an unavailable homeserver or MAS or the
+	// homeserver's refusal, such as a store error, before the event is
+	// skipped.
+	maxAttempts = 3
 )
 
 // Command reduces a member's message to "stop", "start" or "".
@@ -51,9 +56,10 @@ func reason(err error) string {
 // after each batch is handled. It returns only when ctx ends; errors are
 // logged and retried with a wait that doubles from 1s to 1 minute.
 func (b *Bot) Listen(ctx context.Context) error {
+	b.attempts = map[string]int{}
 	since, _, err := b.st.BotState(ctx, keySyncToken)
 	for wait := minBackoff; err != nil; wait = min(wait*2, maxBackoff) {
-		if err := pause(ctx, err, wait); err != nil {
+		if err := b.pause(ctx, err, wait); err != nil {
 			return err
 		}
 		since, _, err = b.st.BotState(ctx, keySyncToken)
@@ -73,7 +79,7 @@ func (b *Bot) Listen(ctx context.Context) error {
 			if ctx.Err() != nil {
 				break
 			}
-			if err := pause(ctx, err, wait); err != nil {
+			if err := b.pause(ctx, err, wait); err != nil {
 				return err
 			}
 			wait = min(wait*2, maxBackoff)
@@ -89,8 +95,11 @@ func (b *Bot) Listen(ctx context.Context) error {
 
 // pause logs why the bot is waiting and waits d; it returns ctx's error if
 // ctx ends first.
-func pause(ctx context.Context, cause error, d time.Duration) error {
-	log.Printf("matrix bot: %s; retrying in %s", reason(cause), d)
+func (b *Bot) pause(ctx context.Context, cause error, d time.Duration) error {
+	slog.Warn("matrix bot: retrying", "reason", reason(cause), "retry_in", d.String())
+	if b.wait != nil {
+		return b.wait(ctx, d)
+	}
 	t := time.NewTimer(d)
 	defer t.Stop()
 	select {
@@ -111,7 +120,7 @@ func replyTxn(id string) string {
 func (b *Bot) reply(ctx context.Context, room, eventID, text string) error {
 	err := b.call(ctx, func() error { return b.m.Send(ctx, room, replyTxn(eventID), Reply(text).Content()) })
 	if refused(err) {
-		log.Printf("matrix bot: a reply was refused: %s", reason(err))
+		slog.Warn("matrix bot: a reply was refused", "reason", reason(err))
 		return nil
 	}
 	return err
@@ -132,14 +141,28 @@ func (b *Bot) leaveAndForget(ctx context.Context, room string) error {
 	return b.cleanup(ctx, func() error { return b.m.Forget(ctx, room) })
 }
 
-// guard keeps one event that cannot be handled from stopping the listener:
-// only an unavailable homeserver or MAS, or the end of ctx, is returned for
-// the batch to be tried again. Anything else is logged and the event skipped.
-func guard(ctx context.Context, err error) error {
-	if err == nil || ctx.Err() != nil || errors.Is(err, ErrUnavailable) {
+// guard keeps one event that cannot be handled from stopping the listener.
+// An unavailable homeserver or MAS, or the end of ctx, is returned for the
+// batch to be tried again, as often as it takes. Any other error but the
+// homeserver's refusal, a store error say, is returned too, until the batch
+// has been tried maxAttempts times for the event under key. A refusal, or an
+// error that outlasts those attempts, is logged and the event skipped.
+func (b *Bot) guard(ctx context.Context, key string, err error) error {
+	if err == nil {
+		delete(b.attempts, key)
+		return nil
+	}
+	if ctx.Err() != nil || errors.Is(err, ErrUnavailable) {
 		return err
 	}
-	log.Printf("matrix bot: an event was skipped: %s", reason(err))
+	if !refused(err) {
+		b.attempts[key]++
+		if b.attempts[key] < maxAttempts {
+			return err
+		}
+	}
+	delete(b.attempts, key)
+	slog.Warn("matrix bot: an event was skipped", "reason", reason(err))
 	return nil
 }
 
@@ -147,7 +170,7 @@ func guard(ctx context.Context, err error) error {
 // answered: the timeline of a first sync is history.
 func (b *Bot) handle(ctx context.Context, r *matrix.SyncResponse, initial bool) error {
 	for room, inv := range r.Rooms.Invite {
-		if err := guard(ctx, b.invite(ctx, room, inv.InviteState.Events)); err != nil {
+		if err := b.guard(ctx, "invite\x00"+room, b.invite(ctx, room, inv.InviteState.Events)); err != nil {
 			return err
 		}
 	}
@@ -156,23 +179,26 @@ func (b *Bot) handle(ctx context.Context, r *matrix.SyncResponse, initial bool) 
 	}
 	for room, j := range r.Rooms.Join {
 		for _, ev := range j.Timeline.Events {
-			if err := guard(ctx, b.event(ctx, room, ev)); err != nil {
+			if err := b.guard(ctx, "event\x00"+room+"\x00"+ev.EventID, b.event(ctx, room, ev)); err != nil {
 				return err
 			}
 		}
 	}
 	for room := range r.Rooms.Leave {
-		m, ok, err := b.st.MatrixMemberByRoom(ctx, room)
-		if err != nil {
+		if err := b.guard(ctx, "leave\x00"+room, b.left(ctx, room)); err != nil {
 			return err
-		}
-		if ok {
-			if err := guard(ctx, b.st.ForgetMatrixRoom(ctx, m.Subject, room)); err != nil {
-				return err
-			}
 		}
 	}
 	return nil
+}
+
+// left forgets a room the bot is no longer in.
+func (b *Bot) left(ctx context.Context, room string) error {
+	m, ok, err := b.st.MatrixMemberByRoom(ctx, room)
+	if err != nil || !ok {
+		return err
+	}
+	return b.st.ForgetMatrixRoom(ctx, m.Subject, room)
 }
 
 // event handles one timeline event of a joined room.
@@ -258,7 +284,7 @@ func (b *Bot) invite(ctx context.Context, room string, state []matrix.Event) err
 		return err
 	}
 	if err != nil {
-		log.Printf("matrix bot: an invitation was rejected: %s", reason(err))
+		slog.Warn("matrix bot: an invitation was rejected", "reason", reason(err))
 		ok = false
 	}
 	if ok {
@@ -274,7 +300,7 @@ func (b *Bot) invite(ctx context.Context, room string, state []matrix.Event) err
 		err = b.reply(ctx, fresh, eventID, ReplyStarted)
 	}
 	if err != nil {
-		log.Printf("matrix bot: a member's room could not be greeted: %s", reason(err))
+		slog.Warn("matrix bot: a member's room could not be greeted", "reason", reason(err))
 	}
 	return nil
 }

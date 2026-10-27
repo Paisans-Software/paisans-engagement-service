@@ -5,8 +5,11 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/paisans-software/paisans-engagement-service/internal/store/storetest"
 )
 
 func TestCommandParsing(t *testing.T) {
@@ -350,4 +353,85 @@ func poisonBatch(room string) string {
 	inv = strings.TrimSuffix(strings.TrimPrefix(inv, `{"rooms":{`), `}}`)
 	return `{"rooms":{` + inv + `,"join":{"` + room + `":{"timeline":{"events":[` +
 		message("$1", "@one:example.org", "m.text", "stop") + `]}}}}}`
+}
+
+// failingStore renames the members table away, so every member lookup fails
+// with a store error, and returns the function that puts it back.
+func failingStore(t *testing.T, e *env) func() {
+	t.Helper()
+	c := storetest.Conn(t, e.st)
+	if _, err := c.Exec(context.Background(), `ALTER TABLE matrix_members RENAME TO matrix_members_away`); err != nil {
+		t.Fatal(err)
+	}
+	return func() {
+		if _, err := c.Exec(context.Background(), `ALTER TABLE matrix_members_away RENAME TO matrix_members`); err != nil {
+			t.Error(err)
+		}
+	}
+}
+
+// listenUntil runs Listen until the sync token is next or 10s pass.
+func listenUntil(t *testing.T, e *env, b *Bot, next string) {
+	t.Helper()
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- b.Listen(ctx) }()
+	defer func() { cancel(); <-done }()
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		v, _, err := e.st.BotState(context.Background(), keySyncToken)
+		if err == nil && v == next {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("sync token never became %q", next)
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+}
+
+// A leave that meets a passing store error is applied on the next attempt.
+func TestStoreErrorRetriesBatch(t *testing.T) {
+	e, b, room := memberRoom(t)
+	prime(t, e)
+	restore := failingStore(t, e)
+	var waits atomic.Int32
+	b.wait = func(ctx context.Context, d time.Duration) error {
+		if waits.Add(1) == 1 {
+			restore()
+		}
+		return nil
+	}
+	syncOf(e, b, [2]string{"b1", joined(room, memberEvent("$1", "@one:example.org", "@one:example.org", "leave"))})
+	listenUntil(t, e, b, "b1")
+	if enabled(t, e) {
+		t.Fatal("the leave was dropped")
+	}
+	if n := waits.Load(); n != 1 {
+		t.Fatalf("%d waits", n)
+	}
+}
+
+// An event whose store error does not pass is skipped after three attempts,
+// so it cannot stop the listener.
+func TestStoreErrorSkippedAfterThreeAttempts(t *testing.T) {
+	e, b, room := memberRoom(t)
+	prime(t, e)
+	restore := failingStore(t, e)
+	b.wait = func(ctx context.Context, d time.Duration) error { return nil }
+	syncOf(e, b, [2]string{"b1", joined(room, memberEvent("$1", "@one:example.org", "@one:example.org", "leave"))})
+	listenUntil(t, e, b, "b1")
+	restore()
+	attempts := 0
+	for _, s := range e.syn.SyncSince() {
+		if s == "start" {
+			attempts++
+		}
+	}
+	if attempts != 3 {
+		t.Fatalf("%d attempts", attempts)
+	}
+	if !enabled(t, e) {
+		t.Fatal("the skipped leave was applied")
+	}
 }

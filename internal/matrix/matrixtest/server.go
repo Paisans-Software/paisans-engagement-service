@@ -38,6 +38,12 @@ type refusal struct {
 
 type syncItem struct{ next, body string }
 
+// servedSync is the last queued batch served and the since it answered.
+type servedSync struct {
+	since string
+	item  syncItem
+}
+
 // Server is the fake homeserver.
 type Server struct {
 	*httptest.Server
@@ -67,6 +73,7 @@ type Server struct {
 	failSends     int
 	failSendCode  int
 	syncQ         []syncItem
+	served        *servedSync
 	syncSince     []string
 	syncQuery     url.Values
 	sendPaths     []string
@@ -167,8 +174,10 @@ func (s *Server) RefuseSend(room string, status int, errcode string) {
 }
 
 // QueueSync queues a /sync response: it carries next_batch next and body as
-// the JSON object body. Once the queue is empty /sync blocks until the
-// request ends or its timeout passes, then answers an empty response.
+// the JSON object body. A request with the same since as the one a queued
+// response answered gets that response again. Once the queue is empty /sync
+// blocks until the request ends or its timeout passes, then answers an empty
+// response.
 func (s *Server) QueueSync(next string, body string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -411,10 +420,16 @@ func (s *Server) sync(w http.ResponseWriter, r *http.Request) {
 	s.mu.Lock()
 	s.syncSince = append(s.syncSince, r.URL.Query().Get("since"))
 	s.syncQuery = r.URL.Query()
+	since := r.URL.Query().Get("since")
 	var item *syncItem
-	if len(s.syncQ) > 0 {
+	switch {
+	case s.served != nil && s.served.since == since:
+		// As a homeserver does, the same since gets the same batch.
+		item = &s.served.item
+	case len(s.syncQ) > 0:
 		item = &s.syncQ[0]
 		s.syncQ = s.syncQ[1:]
+		s.served = &servedSync{since: since, item: *item}
 	}
 	s.mu.Unlock()
 	if item != nil {
