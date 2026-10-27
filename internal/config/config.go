@@ -6,6 +6,7 @@ import (
 	"encoding/base64"
 	"errors"
 	"fmt"
+	"regexp"
 	"strconv"
 	"strings"
 )
@@ -22,6 +23,53 @@ type SMTP struct {
 	TLS      string
 }
 
+// Matrix configures the Digest Bot. The bot runs only when all seven
+// variables are set; with fewer, the service behaves as it does without Matrix.
+type Matrix struct {
+	// URL is the homeserver's public address; ServerName is the part after
+	// the colon in Matrix ids.
+	URL, ServerName string
+	// MASAdminURL is the Matrix Authentication Service's admin listener;
+	// ClientID and ClientSecret are the service's client there.
+	MASAdminURL, ClientID, ClientSecret string
+	// UpstreamProvider is the id of the identity provider members sign in
+	// with; BotLocalpart is the bot's Matrix user name.
+	UpstreamProvider, BotLocalpart string
+}
+
+// matrixVars pairs each variable with the field it fills, in the order
+// Missing reports them.
+func (m Matrix) matrixVars() []struct{ name, value string } {
+	return []struct{ name, value string }{
+		{"ENGAGEMENT_MATRIX_URL", m.URL},
+		{"ENGAGEMENT_MATRIX_SERVER_NAME", m.ServerName},
+		{"ENGAGEMENT_MAS_ADMIN_URL", m.MASAdminURL},
+		{"ENGAGEMENT_MAS_CLIENT_ID", m.ClientID},
+		{"ENGAGEMENT_MAS_CLIENT_SECRET", m.ClientSecret},
+		{"ENGAGEMENT_MAS_UPSTREAM_PROVIDER", m.UpstreamProvider},
+		{"ENGAGEMENT_MATRIX_BOT_LOCALPART", m.BotLocalpart},
+	}
+}
+
+// Enabled reports whether all seven variables are set.
+func (m Matrix) Enabled() bool { return len(m.Missing()) == 0 }
+
+// Missing names the unset variables.
+func (m Matrix) Missing() []string {
+	var out []string
+	for _, v := range m.matrixVars() {
+		if v.value == "" {
+			out = append(out, v.name)
+		}
+	}
+	return out
+}
+
+var (
+	localpartRE = regexp.MustCompile(`^[a-z0-9._=/-]+$`)
+	ulidRE      = regexp.MustCompile(`^[0-9A-HJKMNP-TV-Z]{26}$`)
+)
+
 type Config struct {
 	ListenAddr string
 	// PublicURL is where members reach the unsubscribe page.
@@ -36,6 +84,7 @@ type Config struct {
 	InstanceTitle, MetaTitle string
 	SigningKey               []byte
 	SMTP                     SMTP
+	Matrix                   Matrix
 }
 
 func Load(getenv func(string) string) (Config, error) {
@@ -88,6 +137,13 @@ func Load(getenv func(string) string) (Config, error) {
 			FromName: getenv("ENGAGEMENT_SMTP_FROM_NAME"), TLS: opt("ENGAGEMENT_SMTP_TLS", "starttls"),
 		},
 	}
+	c.Matrix = Matrix{
+		URL: getenv("ENGAGEMENT_MATRIX_URL"), ServerName: getenv("ENGAGEMENT_MATRIX_SERVER_NAME"),
+		MASAdminURL: getenv("ENGAGEMENT_MAS_ADMIN_URL"), ClientID: getenv("ENGAGEMENT_MAS_CLIENT_ID"),
+		ClientSecret:     getenv("ENGAGEMENT_MAS_CLIENT_SECRET"),
+		UpstreamProvider: getenv("ENGAGEMENT_MAS_UPSTREAM_PROVIDER"),
+		BotLocalpart:     getenv("ENGAGEMENT_MATRIX_BOT_LOCALPART"),
+	}
 	// Without a mail host nothing is sent, so a sender address is only
 	// needed once there is one.
 	if c.SMTP.Host != "" {
@@ -126,5 +182,40 @@ func Load(getenv func(string) string) (Config, error) {
 			errs = append(errs, fmt.Errorf("%s must not end in /", u.name))
 		}
 	}
+	if c.Matrix.Enabled() {
+		errs = append(errs, c.Matrix.validate()...)
+	}
 	return c, errors.Join(errs...)
+}
+
+func (m Matrix) validate() []error {
+	var errs []error
+	for _, v := range m.matrixVars() {
+		if strings.ContainsAny(v.value, "\r\n") {
+			errs = append(errs, fmt.Errorf("%s must be one line", v.name))
+		}
+	}
+	for _, u := range []struct{ name, value string }{
+		{"ENGAGEMENT_MATRIX_URL", m.URL},
+		{"ENGAGEMENT_MAS_ADMIN_URL", m.MASAdminURL},
+	} {
+		if !strings.HasPrefix(u.value, "https://") && !strings.HasPrefix(u.value, "http://") {
+			errs = append(errs, fmt.Errorf("%s must start with https:// or http://", u.name))
+		}
+		if strings.HasSuffix(u.value, "/") {
+			errs = append(errs, fmt.Errorf("%s must not end in /", u.name))
+		}
+	}
+	if !localpartRE.MatchString(m.BotLocalpart) {
+		errs = append(errs, errors.New("ENGAGEMENT_MATRIX_BOT_LOCALPART must be lower case letters, digits and . _ = / -"))
+	}
+	for _, id := range []struct{ name, value string }{
+		{"ENGAGEMENT_MAS_CLIENT_ID", m.ClientID},
+		{"ENGAGEMENT_MAS_UPSTREAM_PROVIDER", m.UpstreamProvider},
+	} {
+		if !ulidRE.MatchString(id.value) {
+			errs = append(errs, fmt.Errorf("%s must be a 26 character upper case ULID", id.name))
+		}
+	}
+	return errs
 }

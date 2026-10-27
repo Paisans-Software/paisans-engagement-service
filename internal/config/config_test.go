@@ -148,3 +148,77 @@ func TestLoadRejectsLineBreaks(t *testing.T) {
 		}
 	}
 }
+
+const (
+	ulidA = "01HZX3K8Q2M5N7P9R1S3T5V7W9"
+	ulidB = "01J0A2B3C4D5E6F7G8H9JKMNPQ"
+)
+
+func matrixEnv() map[string]string {
+	return map[string]string{
+		"ENGAGEMENT_MATRIX_URL":            "https://matrix.example.org",
+		"ENGAGEMENT_MATRIX_SERVER_NAME":    "example.org",
+		"ENGAGEMENT_MAS_ADMIN_URL":         "http://10.0.0.5:18010",
+		"ENGAGEMENT_MAS_CLIENT_ID":         ulidA,
+		"ENGAGEMENT_MAS_CLIENT_SECRET":     "s3cret",
+		"ENGAGEMENT_MAS_UPSTREAM_PROVIDER": ulidB,
+		"ENGAGEMENT_MATRIX_BOT_LOCALPART":  "digest-bot",
+	}
+}
+
+func TestMatrixOffWithoutVariables(t *testing.T) {
+	c, err := Load(env(nil))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.Matrix.Enabled() || len(c.Matrix.Missing()) != 7 {
+		t.Fatalf("matrix = %+v, missing %v", c.Matrix, c.Matrix.Missing())
+	}
+}
+
+func TestMatrixOnWithAllSeven(t *testing.T) {
+	c, err := Load(env(matrixEnv()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := Matrix{
+		URL: "https://matrix.example.org", ServerName: "example.org", MASAdminURL: "http://10.0.0.5:18010",
+		ClientID: ulidA, ClientSecret: "s3cret", UpstreamProvider: ulidB, BotLocalpart: "digest-bot",
+	}
+	if !c.Matrix.Enabled() || c.Matrix != want || len(c.Matrix.Missing()) != 0 {
+		t.Fatalf("got %+v", c.Matrix)
+	}
+}
+
+func TestMatrixPartialIsOff(t *testing.T) {
+	o := matrixEnv()
+	delete(o, "ENGAGEMENT_MAS_CLIENT_SECRET")
+	c, err := Load(env(o))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.Matrix.Enabled() || !reflect.DeepEqual(c.Matrix.Missing(), []string{"ENGAGEMENT_MAS_CLIENT_SECRET"}) {
+		t.Fatalf("matrix = %+v, missing %v", c.Matrix, c.Matrix.Missing())
+	}
+}
+
+func TestMatrixValidation(t *testing.T) {
+	for _, tc := range []struct{ name, value string }{
+		{"ENGAGEMENT_MATRIX_URL", "matrix.example.org"},
+		{"ENGAGEMENT_MATRIX_URL", "https://m.example.org/"},
+		{"ENGAGEMENT_MAS_ADMIN_URL", "mas.example.org"},
+		{"ENGAGEMENT_MAS_ADMIN_URL", "http://10.0.0.5:18010/"},
+		{"ENGAGEMENT_MATRIX_BOT_LOCALPART", "Digest"},
+		{"ENGAGEMENT_MATRIX_BOT_LOCALPART", "digest bot"},
+		{"ENGAGEMENT_MAS_UPSTREAM_PROVIDER", "nope"},
+		{"ENGAGEMENT_MAS_CLIENT_ID", "nope"},
+		{"ENGAGEMENT_MATRIX_SERVER_NAME", "example.org\nevil"},
+	} {
+		o := matrixEnv()
+		o[tc.name] = tc.value
+		_, err := Load(env(o))
+		if err == nil || !strings.Contains(err.Error(), tc.name) {
+			t.Errorf("%s=%q: err = %v", tc.name, tc.value, err)
+		}
+	}
+}
