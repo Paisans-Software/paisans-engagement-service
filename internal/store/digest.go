@@ -90,13 +90,24 @@ func (s *Store) Claim(ctx context.Context, subject string, week time.Time) (bool
 // finished, since writing a status for a row nobody holds, or over one
 // already recorded, would hide a bug.
 func (s *Store) Finish(ctx context.Context, subject string, week time.Time, status Status, shown ...Item) error {
+	return s.finish(ctx, tableSends, subject, week, status, shown...)
+}
+
+// Tables a send is recorded in. finish takes only these, never input.
+const (
+	tableSends   = "sends"
+	tableDMSends = "dm_sends"
+)
+
+// finish is Finish for the given send table, one of the constants above.
+func (s *Store) finish(ctx context.Context, table, subject string, week time.Time, status Status, shown ...Item) error {
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
 		return err
 	}
 	defer tx.Rollback(ctx)
 	tag, err := tx.Exec(ctx,
-		`UPDATE sends SET status=$3, at=now() WHERE subject=$1 AND week=$2::date AND status='pending'`,
+		"UPDATE "+table+" SET status=$3, at=now() WHERE subject=$1 AND week=$2::date AND status='pending'",
 		subject, weekDate(week), string(status))
 	if err != nil {
 		return err
