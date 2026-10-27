@@ -110,7 +110,9 @@ func (s *server) invalid(w http.ResponseWriter, r *http.Request) {
 	digestHeaders(w, r)
 	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 	w.WriteHeader(http.StatusNotFound)
-	w.Write([]byte("This link is not valid."))
+	if r.Method != http.MethodHead {
+		w.Write([]byte("This link is not valid."))
+	}
 }
 
 // digestHeaders keeps a digest page, and every answer on its path, out of

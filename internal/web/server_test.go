@@ -1,8 +1,10 @@
 package web
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -243,6 +245,10 @@ func TestWebDigestBadTokens(t *testing.T) {
 }
 
 func TestWebDigestStoreError(t *testing.T) {
+	var logged bytes.Buffer
+	prev := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&logged, nil)))
+	t.Cleanup(func() { slog.SetDefault(prev) })
 	st := storetest.New(t)
 	h := webServer(st, week.Add(time.Hour))
 	tok := token.SignDigest(key, "sub-1", week)
@@ -250,6 +256,9 @@ func TestWebDigestStoreError(t *testing.T) {
 	rec := do(h, "GET", "/d/"+tok, "")
 	if rec.Code != 500 || strings.Contains(rec.Body.String(), "sub-1") || rec.Body.Len() == 0 {
 		t.Fatalf("store error = %d %q", rec.Code, rec.Body.String())
+	}
+	if strings.Contains(logged.String(), "sub-1") || !strings.Contains(logged.String(), "reading a web digest failed") {
+		t.Fatalf("log = %q", logged.String())
 	}
 }
 
