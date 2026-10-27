@@ -97,6 +97,7 @@ func runner(s *store.Store, src run.Source, snd mail.Sender) *run.Runner {
 		Store: s, Source: src, Sender: snd,
 		Names:   mail.Names{Instance: "Talk", Meta: "Talk · Example Community"},
 		SiteURL: "https://talk.example.org/", PublicURL: "https://digest.example.org", Key: key,
+		Matrix: nil,
 	}
 }
 
@@ -632,5 +633,33 @@ func TestShownThreadReturnsOnlyWithNewComments(t *testing.T) {
 	}
 	if len(rec.Messages) != 3 || !strings.Contains(rec.Messages[0].Text, "2 new comments this week") {
 		t.Fatalf("returning thread: %d messages\n%v", len(rec.Messages), rec.Messages)
+	}
+}
+
+// Loop deletes web digests whose four weeks are over.
+func TestLoopPurgesExpired(t *testing.T) {
+	s := storetest.New(t)
+	at := week.Add(-time.Hour) // Sunday, so no week is due
+	old := at.AddDate(0, 0, -29)
+	if _, err := s.SaveDigest(context.Background(), "sub-1", old, []byte(`{}`)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.SaveDigest(context.Background(), "sub-1", week.AddDate(0, 0, -7), []byte(`{}`)); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	defer func() { cancel(); <-done }()
+	c := newClock(at)
+	go func() {
+		run.Loop(ctx, runner(s, newSource(), &mailtest.Recorder{}), c.now, time.Millisecond)
+		close(done)
+	}()
+	c.waitTicks(t, 2)
+	if _, ok, err := s.SavedDigest(context.Background(), "sub-1", old); err != nil || ok {
+		t.Fatalf("expired digest still stored (%v, %v)", ok, err)
+	}
+	if _, ok, err := s.SavedDigest(context.Background(), "sub-1", week.AddDate(0, 0, -7)); err != nil || !ok {
+		t.Fatalf("current digest gone (%v, %v)", ok, err)
 	}
 }
