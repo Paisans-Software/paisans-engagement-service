@@ -21,8 +21,10 @@ type Options struct {
 	Key     []byte
 	Names   mail.Names
 	SiteURL string
-	// Matrix is true when the deployment has a homeserver; unsubscribing
-	// then stops the Matrix digest as well.
+	// Matrix is true when the deployment has a homeserver. Unsubscribing
+	// stops the email only; the Matrix messages have a setting of their own.
+	// Matrix decides whether unsubscribing forgets the threads the member was
+	// shown: with a homeserver, only when their Matrix messages are off too.
 	Matrix bool
 	// Now is the clock; nil means time.Now.
 	Now func() time.Time
