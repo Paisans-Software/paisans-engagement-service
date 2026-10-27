@@ -1,6 +1,7 @@
 package main
 
 import (
+	"github.com/paisans-software/paisans-engagement-service/internal/bot"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -48,5 +49,13 @@ func TestHealthcheckBadAddress(t *testing.T) {
 		if code := healthcheck(addr); code != 1 {
 			t.Errorf("healthcheck(%q) = %d, want 1", addr, code)
 		}
+	}
+}
+
+// A Holder with no bot must give the runner an untyped nil, not a nil
+// *bot.Bot inside the interface, which would pass the runner's nil check.
+func TestRunnerMatrixNilIsUntyped(t *testing.T) {
+	if dm := dmFrom(&bot.Holder{})(); dm != nil {
+		t.Fatalf("dmFrom(empty holder)() = %#v, want untyped nil", dm)
 	}
 }
