@@ -42,6 +42,33 @@ type view struct {
 // Render builds the message for one member. from and to are the window; the
 // heading shows from through the last day the window covers.
 func Render(d digest.Digest, n Names, siteURL, unsubscribeURL string, from, to time.Time) (Message, error) {
+	v := newView(d, n, siteURL, unsubscribeURL, from, to)
+	var html, text bytes.Buffer
+	if err := htmlTmpl.Execute(&html, v); err != nil {
+		return Message{}, fmt.Errorf("render html: %w", err)
+	}
+	if err := textTmpl.Execute(&text, v); err != nil {
+		return Message{}, fmt.Errorf("render text: %w", err)
+	}
+	return Message{
+		Subject:     "Your week on " + n.Meta,
+		Text:        text.String(),
+		HTML:        html.String(),
+		Unsubscribe: unsubscribeURL,
+	}, nil
+}
+
+// RenderPage builds the email's HTML without the unsubscribe link, for the
+// digest's page on the web.
+func RenderPage(d digest.Digest, n Names, siteURL string, from, to time.Time) (string, error) {
+	var html bytes.Buffer
+	if err := htmlTmpl.Execute(&html, newView(d, n, siteURL, "", from, to)); err != nil {
+		return "", fmt.Errorf("render html: %w", err)
+	}
+	return html.String(), nil
+}
+
+func newView(d digest.Digest, n Names, siteURL, unsubscribeURL string, from, to time.Time) view {
 	v := view{
 		Meta: n.Meta, Instance: n.Instance, SiteURL: siteURL, Unsubscribe: unsubscribeURL,
 		Dates: from.Format("Jan 2") + " – " + to.AddDate(0, 0, -1).Format("Jan 2"),
@@ -59,20 +86,7 @@ func Render(d digest.Digest, n Names, siteURL, unsubscribeURL string, from, to t
 	for _, it := range d.More {
 		v.More = append(v.More, toView(it))
 	}
-
-	var html, text bytes.Buffer
-	if err := htmlTmpl.Execute(&html, v); err != nil {
-		return Message{}, fmt.Errorf("render html: %w", err)
-	}
-	if err := textTmpl.Execute(&text, v); err != nil {
-		return Message{}, fmt.Errorf("render text: %w", err)
-	}
-	return Message{
-		Subject:     "Your week on " + n.Meta,
-		Text:        text.String(),
-		HTML:        html.String(),
-		Unsubscribe: unsubscribeURL,
-	}, nil
+	return v
 }
 
 // toView gives a list item its one figure: the comment count when there are

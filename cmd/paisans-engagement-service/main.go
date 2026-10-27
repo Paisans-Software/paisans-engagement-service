@@ -122,7 +122,10 @@ func serve() error {
 		}()
 	}
 
-	srv := &http.Server{Addr: cfg.ListenAddr, Handler: web.NewServer(st, cfg.SigningKey), ReadHeaderTimeout: 10 * time.Second}
+	srv := &http.Server{Addr: cfg.ListenAddr, Handler: web.NewServer(web.Options{
+		Store: st, Key: cfg.SigningKey, Matrix: cfg.Matrix.Enabled(),
+		Names: mail.Names{Instance: cfg.InstanceTitle, Meta: cfg.MetaTitle}, SiteURL: cfg.MbinURL,
+	}), ReadHeaderTimeout: 10 * time.Second}
 	done := make(chan struct{})
 	go func() {
 		defer close(done)

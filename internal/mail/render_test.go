@@ -49,8 +49,13 @@ func TestRenderNames(t *testing.T) {
 			!strings.Contains(body, "member of Talk · Example Community.") {
 			t.Fatalf("meta missing in %s", body)
 		}
-		if strings.Count(body, "Talk · Example Community") != 2 {
-			t.Fatalf("meta should appear in heading and footer only: %s", body)
+		// The HTML part also carries it in its title.
+		want := 2
+		if body == m.HTML {
+			want = 3
+		}
+		if strings.Count(body, "Talk · Example Community") != want {
+			t.Fatalf("meta should appear in heading and footer (and the HTML title) only: %s", body)
 		}
 		if strings.Count(body, "See everything on Talk") != 1 {
 			t.Fatalf("button missing: %s", body)
@@ -179,5 +184,39 @@ func TestRenderReturningFigure(t *testing.T) {
 				t.Fatalf("missing %q:\n%s", w, part)
 			}
 		}
+	}
+}
+
+func renderPage(t *testing.T, d digest.Digest) string {
+	t.Helper()
+	h, err := RenderPage(d, nm, "https://talk.example.org/", from, to)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return h
+}
+
+func TestRenderPageHasNoUnsubscribe(t *testing.T) {
+	h := renderPage(t, sample())
+	for _, bad := range []string{"Unsubscribe", "/u/", "unsubscribe"} {
+		if strings.Contains(h, bad) {
+			t.Fatalf("page contains %q: %s", bad, h)
+		}
+	}
+	for _, want := range []string{"grinders", "See everything on Talk", "<title>Your week on Talk · Example Community</title>", `name="viewport"`} {
+		if !strings.Contains(h, want) {
+			t.Fatalf("page lacks %q: %s", want, h)
+		}
+	}
+}
+
+func TestRenderPageMatchesEmail(t *testing.T) {
+	email := render(t, sample()).HTML
+	const link = `<br><a href="https://digest.example.org/unsubscribe?t=abc" style="color:#999999;">Unsubscribe from the weekly digest</a>`
+	if !strings.Contains(email, link) {
+		t.Fatalf("email lacks the unsubscribe link: %s", email)
+	}
+	if got, want := renderPage(t, sample()), strings.Replace(email, link, "", 1); got != want {
+		t.Fatalf("page differs from the email:\n%s\nwant\n%s", got, want)
 	}
 }
