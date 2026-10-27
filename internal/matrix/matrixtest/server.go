@@ -48,26 +48,28 @@ type Server struct {
 	Down          atomic.Bool
 
 	serverName string
+	accept     func(token string) (user, device string, ok bool)
 
-	mu           sync.Mutex
-	limitN       int
-	limitMS      int
-	limitHeader  string
-	lastAuth     string
-	sends        []Sent
-	sendKeys     map[string]bool
-	attempts     int
-	rooms        []*Room
-	encrypt      bool
-	members      map[string]map[string]string // room -> user -> membership
-	refuse       map[string]refusal
-	syncQ        []syncItem
-	syncSince    []string
-	syncQuery    url.Values
-	sendPaths    []string
-	profiles     map[string]string
-	roomCounter  int
-	eventCounter int
+	mu            sync.Mutex
+	limitN        int
+	limitMS       int
+	limitHeader   string
+	lastAuth      string
+	sends         []Sent
+	sendKeys      map[string]bool
+	attempts      int
+	rooms         []*Room
+	encrypt       bool
+	members       map[string]map[string]string // room -> user -> membership
+	refuse        map[string]refusal
+	syncQ         []syncItem
+	syncSince     []string
+	syncQuery     url.Values
+	sendPaths     []string
+	profiles      map[string]string
+	profileWrites int
+	roomCounter   int
+	eventCounter  int
 }
 
 // New starts a fake homeserver named serverName and closes it with the test.
@@ -84,6 +86,15 @@ func New(t testing.TB, serverName string) *Server {
 	s.Server = httptest.NewServer(http.HandlerFunc(s.handle))
 	t.Cleanup(s.Server.Close)
 	return s
+}
+
+// Accept installs a function that decides every bearer check and supplies
+// whoami's user and device in place of Token and Device. Passing nil restores
+// the fixed Token.
+func (s *Server) Accept(fn func(token string) (user, device string, ok bool)) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.accept = fn
 }
 
 // RateLimitNext makes the next n requests answer 429. retryAfterMS goes in the
@@ -188,6 +199,13 @@ func (s *Server) Profile(user string) string {
 	return s.profiles[user]
 }
 
+// ProfileWrites counts the display name writes received.
+func (s *Server) ProfileWrites() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.profileWrites
+}
+
 func (s *Server) errorJSON(w http.ResponseWriter, status int, code, msg string) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
@@ -231,7 +249,18 @@ func (s *Server) handle(w http.ResponseWriter, r *http.Request) {
 		s.writeJSON(w, map[string]any{"token_endpoint": s.TokenEndpoint})
 		return
 	}
-	if r.Header.Get("Authorization") != "Bearer "+s.Token {
+	s.mu.Lock()
+	accept := s.accept
+	s.mu.Unlock()
+	whoUser, whoDevice := "@digestbot:"+s.serverName, s.Device
+	if accept != nil {
+		u, d, ok := accept(strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer "))
+		if !ok {
+			s.errorJSON(w, http.StatusUnauthorized, "M_UNKNOWN_TOKEN", "Unrecognised access token")
+			return
+		}
+		whoUser, whoDevice = u, d
+	} else if r.Header.Get("Authorization") != "Bearer "+s.Token {
 		s.errorJSON(w, http.StatusUnauthorized, "M_UNKNOWN_TOKEN", "Unrecognised access token")
 		return
 	}
@@ -243,7 +272,7 @@ func (s *Server) handle(w http.ResponseWriter, r *http.Request) {
 	}
 	switch {
 	case r.Method == "GET" && path == "/_matrix/client/v3/account/whoami":
-		s.writeJSON(w, map[string]any{"user_id": "@digestbot:" + s.serverName, "device_id": s.Device})
+		s.writeJSON(w, map[string]any{"user_id": whoUser, "device_id": whoDevice})
 	case len(seg) == 3 && seg[0] == "profile" && seg[2] == "displayname":
 		s.profile(w, r, seg[1])
 	case r.Method == "PUT" && len(seg) == 5 && seg[0] == "rooms" && seg[2] == "send":
@@ -284,6 +313,7 @@ func (s *Server) profile(w http.ResponseWriter, r *http.Request, user string) {
 			return
 		}
 		s.profiles[user] = b.DisplayName
+		s.profileWrites++
 		s.writeJSON(w, map[string]any{})
 	default:
 		s.errorJSON(w, http.StatusMethodNotAllowed, "M_UNRECOGNIZED", "method")
