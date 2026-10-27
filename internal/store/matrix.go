@@ -53,20 +53,22 @@ func (s *Store) MatrixMemberByUser(ctx context.Context, userID string) (MatrixMe
 	return s.matrixBy(ctx, "user_id", userID)
 }
 
-// SetMatrixAccount records the member's MAS user id and Matrix id.
+// SetMatrixAccount records the member's MAS user id and Matrix id. Empty
+// ids clear them: they are stored as NULL, since the Matrix id is unique and
+// any number of members may have none.
 func (s *Store) SetMatrixAccount(ctx context.Context, subject, masUserID, userID string) error {
 	_, err := s.pool.Exec(ctx,
-		`INSERT INTO matrix_members (subject, mas_user_id, user_id) VALUES ($1, $2, $3)
-		ON CONFLICT (subject) DO UPDATE SET mas_user_id=$2, user_id=$3, at=now()`,
+		`INSERT INTO matrix_members (subject, mas_user_id, user_id) VALUES ($1, NULLIF($2, ''), NULLIF($3, ''))
+		ON CONFLICT (subject) DO UPDATE SET mas_user_id=NULLIF($2, ''), user_id=NULLIF($3, ''), at=now()`,
 		subject, masUserID, userID)
 	return err
 }
 
-// SetMatrixRoom records the member's current room.
+// SetMatrixRoom records the member's current room; an empty id clears it.
 func (s *Store) SetMatrixRoom(ctx context.Context, subject, roomID string) error {
 	_, err := s.pool.Exec(ctx,
-		`INSERT INTO matrix_members (subject, room_id) VALUES ($1, $2)
-		ON CONFLICT (subject) DO UPDATE SET room_id=$2, at=now()`,
+		`INSERT INTO matrix_members (subject, room_id) VALUES ($1, NULLIF($2, ''))
+		ON CONFLICT (subject) DO UPDATE SET room_id=NULLIF($2, ''), at=now()`,
 		subject, roomID)
 	return err
 }

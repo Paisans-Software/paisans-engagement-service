@@ -89,6 +89,21 @@ func TestPrepareCachedUserGone(t *testing.T) {
 	}
 }
 
+// Two members whose accounts vanished are both cleared: an unknown account
+// is stored as none, not as an empty id the second would collide with.
+func TestPrepareTwoCachedUsersGone(t *testing.T) {
+	e, b := started(t)
+	ctx := context.Background()
+	for _, sub := range []string{"sub-1", "sub-2"} {
+		if err := e.st.SetMatrixAccount(ctx, sub, "01GONE"+sub, "@old-"+sub+":example.org"); err != nil {
+			t.Fatal(err)
+		}
+		if _, ok, err := b.Prepare(ctx, sub); ok || err != nil {
+			t.Fatalf("%s: %v %v", sub, ok, err)
+		}
+	}
+}
+
 func prepared(t *testing.T, e *env, b *Bot) Target {
 	t.Helper()
 	link(e, "sub-1", "one")

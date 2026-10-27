@@ -43,6 +43,37 @@ func TestMatrixAccountAndRoom(t *testing.T) {
 	}
 }
 
+// An empty id is no id: clearing two members' accounts and rooms stores
+// none, so the unique columns never see two empty values.
+func TestClearedAccountsAreNull(t *testing.T) {
+	s := storetest.New(t)
+	ctx := context.Background()
+	for _, sub := range []string{"sub-1", "sub-2"} {
+		if err := s.SetMatrixAccount(ctx, sub, "01"+sub, "@"+sub+":example.org"); err != nil {
+			t.Fatal(err)
+		}
+		if err := s.SetMatrixAccount(ctx, sub, "", ""); err != nil {
+			t.Fatalf("%s: clear account: %v", sub, err)
+		}
+		if err := s.SetMatrixRoom(ctx, sub, ""); err != nil {
+			t.Fatalf("%s: clear room: %v", sub, err)
+		}
+	}
+	if n := countNulls(t, s); n != 2 {
+		t.Fatalf("%d rows with every id NULL, want 2", n)
+	}
+}
+
+func countNulls(t *testing.T, s *store.Store) int {
+	t.Helper()
+	var n int
+	if err := storetest.Conn(t, s).QueryRow(context.Background(),
+		`SELECT count(*) FROM matrix_members WHERE mas_user_id IS NULL AND user_id IS NULL AND room_id IS NULL`).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	return n
+}
+
 func TestForgetRoomOnlyIfCurrent(t *testing.T) {
 	s := storetest.New(t)
 	ctx := context.Background()
