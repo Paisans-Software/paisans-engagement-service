@@ -61,7 +61,7 @@ func (s *server) unsubscribe(w http.ResponseWriter, r *http.Request) {
 		s.invalid(w, r)
 		return
 	}
-	if err := s.store.Unsubscribe(r.Context(), subject); err != nil {
+	if err := s.store.Unsubscribe(r.Context(), subject, false); err != nil {
 		// The subject is a member's identity and stays out of the log.
 		slog.Error("unsubscribe failed", "error", err)
 		w.WriteHeader(http.StatusInternalServerError)

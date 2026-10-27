@@ -25,10 +25,12 @@ type Item struct {
 	ID   int64
 }
 
-// Unsubscribe records that the member never wants the digest again, and
-// forgets which threads they were shown. Calling it twice changes nothing, so
-// a repeated click on the link is harmless.
-func (s *Store) Unsubscribe(ctx context.Context, subject string) error {
+// Unsubscribe records that the member never wants the email digest again.
+// Which threads they were shown is forgotten once no channel is left: always
+// when matrix is false (the deployment has no homeserver), otherwise when the
+// member's Matrix digest is off too. Calling it twice changes nothing, so a
+// repeated click on the link is harmless.
+func (s *Store) Unsubscribe(ctx context.Context, subject string, matrix bool) error {
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
 		return err
@@ -37,15 +39,18 @@ func (s *Store) Unsubscribe(ctx context.Context, subject string) error {
 	if _, err := tx.Exec(ctx, `INSERT INTO unsubscribes (subject) VALUES ($1) ON CONFLICT (subject) DO NOTHING`, subject); err != nil {
 		return err
 	}
-	if _, err := tx.Exec(ctx, `DELETE FROM shown WHERE subject=$1`, subject); err != nil {
+	if _, err := tx.Exec(ctx,
+		`DELETE FROM shown WHERE subject=$1 AND ($2 OR EXISTS (SELECT 1 FROM matrix_members WHERE subject=$1 AND NOT enabled))`,
+		subject, !matrix); err != nil {
 		return err
 	}
 	return tx.Commit(ctx)
 }
 
-// Shown is every thread an earlier digest showed the member.
-func (s *Store) Shown(ctx context.Context, subject string) (map[Item]bool, error) {
-	rows, err := s.pool.Query(ctx, `SELECT DISTINCT kind, item_id FROM shown WHERE subject=$1`, subject)
+// Shown is every thread an earlier digest showed the member, in weeks strictly
+// before the date of before.
+func (s *Store) Shown(ctx context.Context, subject string, before time.Time) (map[Item]bool, error) {
+	rows, err := s.pool.Query(ctx, `SELECT DISTINCT kind, item_id FROM shown WHERE subject=$1 AND week < $2::date`, subject, weekDate(before))
 	if err != nil {
 		return nil, err
 	}

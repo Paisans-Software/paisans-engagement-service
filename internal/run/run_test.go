@@ -190,7 +190,7 @@ func TestTwoRunnersOneStore(t *testing.T) {
 
 func TestUnsubscribedGetsNothing(t *testing.T) {
 	s := storetest.New(t)
-	if err := s.Unsubscribe(context.Background(), "sub-2"); err != nil {
+	if err := s.Unsubscribe(context.Background(), "sub-2", false); err != nil {
 		t.Fatal(err)
 	}
 	rec := &mailtest.Recorder{}

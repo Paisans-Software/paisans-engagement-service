@@ -136,7 +136,7 @@ func (r *Runner) one(ctx context.Context, m digest.Member, from, to time.Time, i
 	if err != nil {
 		return "", nil, fmt.Errorf("read the member's view: %w", err)
 	}
-	shown, err := r.Store.Shown(ctx, m.Subject)
+	shown, err := r.Store.Shown(ctx, m.Subject, to)
 	if err != nil {
 		return "", nil, fmt.Errorf("read what the member was shown: %w", err)
 	}
