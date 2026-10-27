@@ -56,9 +56,11 @@ type Item struct {
 }
 
 type Member struct {
-	ID int64
+	ID      int64
+	Subject string
 	// Email is empty when the member has no verified address to mail.
-	Subject, Email, Username string
+	Email    string
+	Username string
 }
 
 // View is what one member has done and chosen.

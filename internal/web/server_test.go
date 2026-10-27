@@ -3,7 +3,11 @@ package web
 import (
 	"bytes"
 	"context"
+	"crypto/hmac"
+	"crypto/sha256"
+	"encoding/base64"
 	"encoding/json"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
@@ -215,7 +219,6 @@ func TestWebDigestBadTokens(t *testing.T) {
 	payload, mac, _ := strings.Cut(good, ".")
 	otherSubject := token.SignDigest(key, "sub-2", week)
 	_, otherMAC, _ := strings.Cut(otherSubject, ".")
-	_ = mac
 	tokens := map[string]string{
 		"altered":       payload + "." + mac[:len(mac)-2] + "AA",
 		"other subject": payload + "." + otherMAC,
@@ -235,11 +238,11 @@ func TestWebDigestBadTokens(t *testing.T) {
 			t.Errorf("%s: content type differs from /u/", name)
 		}
 	}
-	// Expired: four weeks after the send time.
-	late := webServer(st, week.Add(28*24*time.Hour))
+	// Expired: four weeks after the send time, by the calendar.
+	late := webServer(st, store.DigestExpiry(week))
 	wantBody(t, do(late, "GET", "/d/"+good, ""), 404, badBody)
 	// Just before expiry it still reads.
-	if rec := do(webServer(st, week.Add(28*24*time.Hour-time.Second)), "GET", "/d/"+good, ""); rec.Code != 200 {
+	if rec := do(webServer(st, store.DigestExpiry(week).Add(-time.Second)), "GET", "/d/"+good, ""); rec.Code != 200 {
 		t.Fatalf("before expiry = %d", rec.Code)
 	}
 }
@@ -273,7 +276,7 @@ func TestWebDigestRecordsNothing(t *testing.T) {
 			if err := conn.QueryRow(context.Background(), "SELECT count(*) FROM "+tb).Scan(&n); err != nil {
 				t.Fatal(err)
 			}
-			out = append(out, tb+"="+string(rune('0'+n)))
+			out = append(out, tb+"="+fmt.Sprint(n))
 		}
 		return strings.Join(out, ",")
 	}
@@ -294,5 +297,26 @@ func TestWebDigestOtherMethods(t *testing.T) {
 	h := webServer(st, week.Add(time.Hour))
 	for _, m := range []string{"POST", "PUT", "DELETE"} {
 		wantBody(t, do(h, m, "/d/"+token.SignDigest(key, "sub-1", week), ""), 404, badBody)
+	}
+}
+
+// A correctly signed token whose date is not a calendar day gets the same
+// 404 as any bad link, and the digest headers once.
+func TestWebDigestSignedBadDate(t *testing.T) {
+	st := storetest.New(t)
+	saveDigest(t, st, "sub-1")
+	for _, date := range []string{"2026-02-30", "2026-10-26x", "26-10-2026"} {
+		m := hmac.New(sha256.New, key)
+		m.Write([]byte("digest\x00sub-1\x00" + date))
+		tok := base64.RawURLEncoding.EncodeToString([]byte("sub-1\x00"+date)) + "." +
+			base64.RawURLEncoding.EncodeToString(m.Sum(nil))
+		rec := do(webServer(st, week.Add(time.Hour)), "GET", "/d/"+tok, "")
+		wantBody(t, rec, 404, badBody)
+		if got := rec.Header().Values("X-Robots-Tag"); len(got) != 1 || got[0] != "noindex" {
+			t.Errorf("%s: X-Robots-Tag %q", date, got)
+		}
+		if got := rec.Header().Values("Cache-Control"); len(got) != 1 || got[0] != "private, no-store" {
+			t.Errorf("%s: Cache-Control %q", date, got)
+		}
 	}
 }

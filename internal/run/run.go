@@ -171,8 +171,10 @@ func (r *Runner) emailPass(ctx context.Context, members []digest.Member, from, w
 			mm, err := r.Store.MatrixMember(ctx, m.Subject)
 			if err != nil {
 				// Nothing claimed, so the retry that the error causes
-				// reaches them.
-				n.unclaimed++
+				// reaches them. Only an email can be left unclaimed.
+				if emailOn {
+					n.unclaimed++
+				}
 				fail(fmt.Errorf("read the Matrix setting: %w", err))
 				continue
 			}

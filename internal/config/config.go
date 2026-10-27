@@ -37,10 +37,13 @@ type Matrix struct {
 	UpstreamProvider, BotLocalpart string
 }
 
-// matrixVars pairs each variable with the field it fills, in the order
-// Missing reports them.
-func (m Matrix) matrixVars() []struct{ name, value string } {
-	return []struct{ name, value string }{
+// variable is an environment variable's name and value.
+type variable struct{ name, value string }
+
+// vars pairs each variable with the field it fills, in the order Missing
+// reports them.
+func (m Matrix) vars() []variable {
+	return []variable{
 		{"ENGAGEMENT_MATRIX_URL", m.URL},
 		{"ENGAGEMENT_MATRIX_SERVER_NAME", m.ServerName},
 		{"ENGAGEMENT_MAS_ADMIN_URL", m.MASAdminURL},
@@ -57,7 +60,7 @@ func (m Matrix) Enabled() bool { return len(m.Missing()) == 0 }
 // Missing names the unset variables.
 func (m Matrix) Missing() []string {
 	var out []string
-	for _, v := range m.matrixVars() {
+	for _, v := range m.vars() {
 		if v.value == "" {
 			out = append(out, v.name)
 		}
@@ -153,25 +156,43 @@ func Load(getenv func(string) string) (Config, error) {
 	}
 	// These reach mail headers and links, where a line break would let the
 	// value start a header of its own.
-	for _, v := range []struct{ name, value string }{
+	errs = append(errs, oneLine([]variable{
 		{"ENGAGEMENT_META_TITLE", c.MetaTitle},
 		{"ENGAGEMENT_INSTANCE_TITLE", c.InstanceTitle},
 		{"ENGAGEMENT_PUBLIC_URL", c.PublicURL},
 		{"ENGAGEMENT_MBIN_URL", c.MbinURL},
-	} {
-		if strings.ContainsAny(v.value, "\r\n") {
-			errs = append(errs, fmt.Errorf("%s must be one line", v.name))
-		}
-	}
+	})...)
 	switch c.SMTP.TLS {
 	case "none", "starttls", "tls":
 	default:
 		errs = append(errs, errors.New("ENGAGEMENT_SMTP_TLS must be none, starttls or tls"))
 	}
-	for _, u := range []struct{ name, value string }{
+	errs = append(errs, baseURLs([]variable{
 		{"ENGAGEMENT_PUBLIC_URL", c.PublicURL},
 		{"ENGAGEMENT_MBIN_URL", c.MbinURL},
-	} {
+	})...)
+	if c.Matrix.Enabled() {
+		errs = append(errs, c.Matrix.validate()...)
+	}
+	return c, errors.Join(errs...)
+}
+
+// oneLine refuses a value with a line break.
+func oneLine(vs []variable) []error {
+	var errs []error
+	for _, v := range vs {
+		if strings.ContainsAny(v.value, "\r\n") {
+			errs = append(errs, fmt.Errorf("%s must be one line", v.name))
+		}
+	}
+	return errs
+}
+
+// baseURLs refuses a value that is not an http or https URL without a
+// trailing slash. An empty value is left to the check that requires it.
+func baseURLs(vs []variable) []error {
+	var errs []error
+	for _, u := range vs {
 		if u.value == "" {
 			continue
 		}
@@ -182,34 +203,19 @@ func Load(getenv func(string) string) (Config, error) {
 			errs = append(errs, fmt.Errorf("%s must not end in /", u.name))
 		}
 	}
-	if c.Matrix.Enabled() {
-		errs = append(errs, c.Matrix.validate()...)
-	}
-	return c, errors.Join(errs...)
+	return errs
 }
 
 func (m Matrix) validate() []error {
-	var errs []error
-	for _, v := range m.matrixVars() {
-		if strings.ContainsAny(v.value, "\r\n") {
-			errs = append(errs, fmt.Errorf("%s must be one line", v.name))
-		}
-	}
-	for _, u := range []struct{ name, value string }{
+	errs := oneLine(m.vars())
+	errs = append(errs, baseURLs([]variable{
 		{"ENGAGEMENT_MATRIX_URL", m.URL},
 		{"ENGAGEMENT_MAS_ADMIN_URL", m.MASAdminURL},
-	} {
-		if !strings.HasPrefix(u.value, "https://") && !strings.HasPrefix(u.value, "http://") {
-			errs = append(errs, fmt.Errorf("%s must start with https:// or http://", u.name))
-		}
-		if strings.HasSuffix(u.value, "/") {
-			errs = append(errs, fmt.Errorf("%s must not end in /", u.name))
-		}
-	}
+	})...)
 	if !localpartRE.MatchString(m.BotLocalpart) {
 		errs = append(errs, errors.New("ENGAGEMENT_MATRIX_BOT_LOCALPART must be lower case letters, digits and . _ = / -"))
 	}
-	for _, id := range []struct{ name, value string }{
+	for _, id := range []variable{
 		{"ENGAGEMENT_MAS_CLIENT_ID", m.ClientID},
 		{"ENGAGEMENT_MAS_UPSTREAM_PROVIDER", m.UpstreamProvider},
 	} {

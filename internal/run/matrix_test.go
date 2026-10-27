@@ -666,29 +666,78 @@ func TestWeekDateAgreesInLocalZone(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	monday := time.Date(2026, 3, 30, 8, 0, 0, 0, berlin)
+	// 00:30 on the Monday is still Sunday in UTC.
+	for _, monday := range []time.Time{
+		time.Date(2026, 3, 30, 8, 0, 0, 0, berlin),
+		time.Date(2026, 3, 30, 0, 30, 0, 0, berlin),
+	} {
+		t.Run(monday.Format("15:04"), func(t *testing.T) {
+			s := storetest.New(t)
+			src := newSource()
+			src.members = src.members[:1]
+			dm := newDM()
+			r := matrixRunner(s, laterSource{src, thread}, &mailtest.Recorder{}, dm)
+			r.Now = func() time.Time { return monday.Add(time.Hour) }
+			if err := r.Week(context.Background(), monday); err != nil {
+				t.Fatal(err)
+			}
+			if st := dmStatuses(t, s, "2026-03-30"); st["sub-1"] != string(store.StatusSent) {
+				t.Fatalf("dm_sends: %v", st)
+			}
+			if n := countRows(t, s, `SELECT count(*) FROM web_digests WHERE week = '2026-03-30'`); n != 1 {
+				t.Fatalf("%d web digests dated 2026-03-30", n)
+			}
+			got := dm.deliveries()
+			if len(got) != 1 {
+				t.Fatalf("deliveries: %v", dm.subjects())
+			}
+			tok, _ := strings.CutPrefix(link(t, got[0].Notice), "https://digest.example.org/d/")
+			if _, date, ok := token.VerifyDigest(key, tok); !ok || date != "2026-03-30" {
+				t.Fatalf("token date %q (ok %v)", date, ok)
+			}
+		})
+	}
+}
+
+// A relay outage holds up the email only: the Matrix notices still go out,
+// and every email is left for the next attempt.
+func TestRelayOutageWithMatrixOn(t *testing.T) {
 	s := storetest.New(t)
-	src := newSource()
-	src.members = src.members[:1]
+	snd := &notSentFor{err: fmt.Errorf("%w: could not connect", mail.ErrRelayUnavailable)}
 	dm := newDM()
-	r := matrixRunner(s, laterSource{src, thread}, &mailtest.Recorder{}, dm)
-	r.Now = func() time.Time { return monday.Add(time.Hour) }
-	if err := r.Week(context.Background(), monday); err != nil {
+	if err := matrixRunner(s, newSource(), snd, dm).Week(context.Background(), week); !errors.Is(err, mail.ErrNotSent) {
+		t.Fatalf("Week: %v, want ErrNotSent", err)
+	}
+	if n := len(dm.deliveries()); n != 3 {
+		t.Fatalf("%d deliveries", n)
+	}
+	if got := statuses(t, s); len(got) != 0 {
+		t.Fatalf("sends rows: %v", got)
+	}
+}
+
+// A Matrix setting that cannot be read claims nobody, by either channel, and
+// counts as unclaimed only a member who had an email to claim.
+func TestMatrixSettingUnreadable(t *testing.T) {
+	var logs bytes.Buffer
+	prev := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&logs, nil)))
+	defer slog.SetDefault(prev)
+	s := storetest.New(t)
+	if _, err := storetest.Conn(t, s).Exec(context.Background(), `ALTER TABLE matrix_members RENAME TO matrix_members_away`); err != nil {
 		t.Fatal(err)
 	}
-	if st := dmStatuses(t, s, "2026-03-30"); st["sub-1"] != string(store.StatusSent) {
-		t.Fatalf("dm_sends: %v", st)
+	src := newSource()
+	src.members = append(src.members, digest.Member{ID: 4, Subject: "sub-4", Username: "four"})
+	rec, dm := &mailtest.Recorder{}, newDM()
+	if err := matrixRunner(s, src, rec, dm).Week(context.Background(), week); err == nil {
+		t.Fatal("Week succeeded without the Matrix settings")
 	}
-	if n := countRows(t, s, `SELECT count(*) FROM web_digests WHERE week = '2026-03-30'`); n != 1 {
-		t.Fatalf("%d web digests dated 2026-03-30", n)
+	if len(rec.Messages) != 0 || len(dm.deliveries()) != 0 {
+		t.Fatalf("%d emails, deliveries %v", len(rec.Messages), dm.subjects())
 	}
-	got := dm.deliveries()
-	if len(got) != 1 {
-		t.Fatalf("deliveries: %v", dm.subjects())
-	}
-	tok, _ := strings.CutPrefix(link(t, got[0].Notice), "https://digest.example.org/d/")
-	if _, date, ok := token.VerifyDigest(key, tok); !ok || date != "2026-03-30" {
-		t.Fatalf("token date %q (ok %v)", date, ok)
+	if !strings.Contains(logs.String(), "unclaimed=3") {
+		t.Fatalf("summary: %s", logs.String())
 	}
 }
 

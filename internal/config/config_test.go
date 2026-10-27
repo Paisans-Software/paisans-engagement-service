@@ -217,8 +217,14 @@ func TestMatrixValidation(t *testing.T) {
 		o := matrixEnv()
 		o[tc.name] = tc.value
 		_, err := Load(env(o))
-		if err == nil || !strings.Contains(err.Error(), tc.name) {
-			t.Errorf("%s=%q: err = %v", tc.name, tc.value, err)
+		if err == nil {
+			t.Errorf("%s=%q: no error", tc.name, tc.value)
+			continue
+		}
+		for _, line := range strings.Split(err.Error(), "\n") {
+			if !strings.Contains(line, tc.name) {
+				t.Errorf("%s=%q: error about something else: %q", tc.name, tc.value, line)
+			}
 		}
 	}
 }

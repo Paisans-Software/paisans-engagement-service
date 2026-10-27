@@ -350,12 +350,15 @@ func TestMembersRule(t *testing.T) {
 func TestIsMember(t *testing.T) {
 	f := newFixture(t)
 	f.user(t, 1, nil)
+	f.user(t, 2, row{"is_verified": false})
+	f.user(t, 3, row{"email": nil})
 	f.user(t, 4, row{"is_banned": true})
 	s := f.source(t)
+	// A member needs no address to be one; the Matrix digest reaches them.
 	for _, c := range []struct {
 		subject string
 		want    bool
-	}{{"sub-1", true}, {"sub-4", false}, {"nobody", false}} {
+	}{{"sub-1", true}, {"sub-2", true}, {"sub-3", true}, {"sub-4", false}, {"nobody", false}} {
 		got, err := s.IsMember(context.Background(), c.subject)
 		if err != nil {
 			t.Fatal(err)
@@ -427,6 +430,25 @@ func TestHotFederatedWithSubscriber(t *testing.T) {
 	}
 	if got[0].TopComments != nil {
 		t.Errorf("federated item carries comments: %+v", got[0].TopComments)
+	}
+}
+
+// A member without a verified address is a member, so their subscription
+// admits federated content too.
+func TestHotFederatedWithUnverifiedSubscriber(t *testing.T) {
+	f := newFixture(t)
+	f.user(t, 1, row{"is_verified": false})
+	f.user(t, 4, row{"ap_id": "https://remote.example.org/u/4"})
+	f.magazine(t, 15, row{"name": "far@remote.example.org", "ap_id": "https://remote.example.org/m/far"})
+	f.exec(t, `INSERT INTO magazine_subscription VALUES (1, 15)`)
+	f.entry(t, 9, 4, 15, row{"ap_id": "https://remote.example.org/t/9", "score": 5})
+
+	got, err := f.source(t).Hot(context.Background(), from, to)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 || got[0].Key != entryKey(9) {
+		t.Fatalf("got %v", keys(got))
 	}
 }
 

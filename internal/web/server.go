@@ -59,9 +59,9 @@ func NewServer(o Options) http.Handler {
 	// Without these the mux answers another method on a known path with
 	// 405, which says the path exists.
 	mux.HandleFunc("/u/{token}", s.invalid)
-	mux.HandleFunc("GET /d/{token}", s.page)
-	mux.HandleFunc("HEAD /d/{token}", s.page)
-	mux.HandleFunc("/d/{token}", s.invalid)
+	mux.HandleFunc("GET /d/{token}", digestHeaders(s.page))
+	mux.HandleFunc("HEAD /d/{token}", digestHeaders(s.page))
+	mux.HandleFunc("/d/{token}", digestHeaders(s.invalid))
 	mux.HandleFunc("/healthz", http.NotFound)
 	return securityHeaders(mux)
 }
@@ -109,7 +109,6 @@ func (s *server) head(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *server) invalid(w http.ResponseWriter, r *http.Request) {
-	digestHeaders(w, r)
 	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 	w.WriteHeader(http.StatusNotFound)
 	if r.Method != http.MethodHead {
@@ -119,11 +118,22 @@ func (s *server) invalid(w http.ResponseWriter, r *http.Request) {
 
 // digestHeaders keeps a digest page, and every answer on its path, out of
 // search indexes and shared caches.
-func digestHeaders(w http.ResponseWriter, r *http.Request) {
-	if len(r.URL.Path) >= 3 && r.URL.Path[:3] == "/d/" {
+func digestHeaders(h http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("X-Robots-Tag", "noindex")
 		w.Header().Set("Cache-Control", "private, no-store")
+		h(w, r)
 	}
+}
+
+// fail answers 500 with a plain sentence and logs what failed. The log
+// line names no member: the subject is their identity, and an error may
+// quote it.
+func (s *server) fail(w http.ResponseWriter, what string) {
+	slog.Error(what)
+	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+	w.WriteHeader(http.StatusInternalServerError)
+	w.Write([]byte("Something went wrong. Please try the link again."))
 }
 
 // page renders a sent digest. It reads and records nothing else, so a link
@@ -140,15 +150,9 @@ func (s *server) page(w http.ResponseWriter, r *http.Request) {
 		s.invalid(w, r)
 		return
 	}
-	digestHeaders(w, r)
 	content, found, err := s.store.WebDigest(r.Context(), subject, date, s.now())
 	if err != nil {
-		// The subject is a member's identity and the error may quote it, so
-		// neither is logged.
-		slog.Error("reading a web digest failed")
-		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
-		w.WriteHeader(http.StatusInternalServerError)
-		w.Write([]byte("Something went wrong. Please try the link again."))
+		s.fail(w, "reading a web digest failed")
 		return
 	}
 	if !found {
@@ -157,18 +161,12 @@ func (s *server) page(w http.ResponseWriter, r *http.Request) {
 	}
 	var d digest.Digest
 	if err := json.Unmarshal(content, &d); err != nil {
-		slog.Error("a stored web digest is unreadable")
-		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
-		w.WriteHeader(http.StatusInternalServerError)
-		w.Write([]byte("Something went wrong. Please try the link again."))
+		s.fail(w, "a stored web digest is unreadable")
 		return
 	}
 	html, err := mail.RenderPage(d, s.names, s.siteURL, day.AddDate(0, 0, -7), day)
 	if err != nil {
-		slog.Error("rendering a web digest failed")
-		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
-		w.WriteHeader(http.StatusInternalServerError)
-		w.Write([]byte("Something went wrong. Please try the link again."))
+		s.fail(w, "rendering a web digest failed")
 		return
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
