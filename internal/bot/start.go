@@ -90,18 +90,21 @@ func Start(ctx context.Context, m *matrix.Client, a *mas.Client, st *store.Store
 	b := &Bot{m: m, a: a, st: st, members: members, cfg: cfg,
 		userID: "@" + cfg.Localpart + ":" + cfg.ServerName}
 
-	vs, err := a.Version(ctx)
-	if err != nil {
-		return nil, wrap(err)
-	}
-	if v, ok := mas.ParseVersion(vs); !ok || v.Less(mas.MinVersion) {
-		return nil, off("MAS %s is older than 1.5.0", vs)
-	}
+	// The token endpoint is on MAS's public listener, which the homeserver's
+	// auth metadata names; every admin call, the version check included,
+	// needs a token from it.
 	endpoint, err := m.AuthMetadata(ctx)
 	if err != nil {
 		return nil, wrap(err)
 	}
 	a.SetTokenEndpoint(endpoint)
+	vs, err := a.Version(ctx)
+	if err != nil {
+		return nil, wrap(err)
+	}
+	if v, ok := mas.ParseVersion(vs); !ok || v.Less(mas.MinVersion) {
+		return nil, off("MAS %s is older than %d.%d.%d", vs, mas.MinVersion.Major, mas.MinVersion.Minor, mas.MinVersion.Patch)
+	}
 
 	if err := b.account(ctx); err != nil {
 		return nil, wrap(err)

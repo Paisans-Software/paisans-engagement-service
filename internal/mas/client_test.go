@@ -228,6 +228,20 @@ func TestUnavailableHidesSecret(t *testing.T) {
 	}
 }
 
+// A client that was never told the token endpoint makes no request and says
+// so, without the secret.
+func TestNoTokenEndpoint(t *testing.T) {
+	s := mastest.New(t)
+	c := mas.New(s.URL, s.ClientID, s.Secret, nil)
+	_, err := c.Version(context.Background())
+	if err == nil || !strings.Contains(err.Error(), "token endpoint not set") || strings.Contains(err.Error(), s.Secret) {
+		t.Fatalf("err = %v", err)
+	}
+	if n := s.TokenRequests(); n != 0 {
+		t.Fatalf("TokenRequests = %d", n)
+	}
+}
+
 func TestNetworkErrorIsUnavailable(t *testing.T) {
 	s := mastest.New(t)
 	c := mas.New(s.URL, s.ClientID, s.Secret, nil)

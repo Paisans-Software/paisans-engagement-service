@@ -93,20 +93,21 @@ type Client struct {
 }
 
 // New returns a client for the admin API at adminURL. A nil hc gets a
-// client with a 15 second timeout. The token endpoint defaults to
-// /oauth2/token on the admin URL's host; SetTokenEndpoint replaces it.
+// client with a 15 second timeout. MAS serves its token endpoint on its
+// public listener, not the admin one, so no admin call succeeds until
+// SetTokenEndpoint names it.
+//
+// Every method that is given a context whose deadline passes or that is
+// cancelled returns that context's error.
 func New(adminURL, clientID, clientSecret string, hc *http.Client) *Client {
 	if hc == nil {
 		hc = &http.Client{Timeout: 15 * time.Second}
 	}
-	c := &Client{adminURL: strings.TrimRight(adminURL, "/"), clientID: clientID, secret: clientSecret, hc: hc}
-	if u, err := url.Parse(adminURL); err == nil {
-		c.tokenURL = u.Scheme + "://" + u.Host + "/oauth2/token"
-	}
-	return c
+	return &Client{adminURL: strings.TrimRight(adminURL, "/"), clientID: clientID, secret: clientSecret, hc: hc}
 }
 
-// SetTokenEndpoint sets the OAuth token endpoint URL.
+// SetTokenEndpoint sets the OAuth token endpoint URL, as the homeserver's
+// auth metadata gives it.
 func (c *Client) SetTokenEndpoint(u string) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -134,11 +135,17 @@ func (c *Client) send(ctx context.Context, req *http.Request, what string) (int,
 	return resp.StatusCode, b, nil
 }
 
+// minTokenLife is the shortest time an admin token is cached.
+const minTokenLife = 30 * time.Second
+
 func (c *Client) adminToken(ctx context.Context) (string, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if c.token != "" && time.Now().Before(c.tokenUntil) {
 		return c.token, nil
+	}
+	if c.tokenURL == "" {
+		return "", errors.New("MAS token endpoint not set")
 	}
 	form := url.Values{"grant_type": {"client_credentials"}, "scope": {"urn:mas:admin"}}
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.tokenURL, strings.NewReader(form.Encode()))
@@ -165,9 +172,13 @@ func (c *Client) adminToken(ctx context.Context) (string, error) {
 	if json.Unmarshal(body, &out) != nil || out.AccessToken == "" {
 		return "", errors.New("MAS token endpoint answered without an access token")
 	}
+	// A token is used until a minute before it expires. One that comes
+	// without a lifetime, or with one too short for that minute, is still
+	// kept for minTokenLife, so a burst of calls does not ask for a token
+	// each; a token that expires sooner is renewed by the 401 retry in do.
 	life := time.Duration(out.ExpiresIn)*time.Second - 60*time.Second
-	if life < 0 {
-		life = 0
+	if life < minTokenLife {
+		life = minTokenLife
 	}
 	c.token = out.AccessToken
 	c.tokenUntil = time.Now().Add(life)

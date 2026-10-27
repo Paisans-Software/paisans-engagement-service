@@ -3,6 +3,7 @@ package bot
 import (
 	"context"
 	"errors"
+	"net/http"
 	"strings"
 	"testing"
 	"time"
@@ -32,6 +33,7 @@ func newEnv(t *testing.T) *env {
 	t.Helper()
 	e := &env{mas: mastest.New(t), syn: matrixtest.New(t, serverName), st: storetest.New(t),
 		cfg: Config{ServerName: serverName, Provider: provider, Localpart: "digest-bot"}}
+	e.mas.AddProvider(provider)
 	e.syn.TokenEndpoint = e.mas.TokenURL()
 	e.syn.Accept(func(token string) (string, string, bool) {
 		for _, s := range e.mas.Sessions() {
@@ -88,6 +90,27 @@ func TestStartCreatesBot(t *testing.T) {
 	}
 	if _, ok, _ := e.st.BotState(context.Background(), "create_intent"); ok {
 		t.Error("create_intent kept")
+	}
+}
+
+// MAS serves its token endpoint on the public listener named in the
+// homeserver's auth metadata, not on the admin listener, so the bot must
+// learn the endpoint before its first admin call.
+func TestStartTokenEndpointFromMetadata(t *testing.T) {
+	e := newEnv(t)
+	resp, err := http.Post(e.mas.URL+"/oauth2/token", "application/x-www-form-urlencoded", strings.NewReader("grant_type=client_credentials"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("admin listener answered the token route with %d, want 404", resp.StatusCode)
+	}
+	if _, err := e.start(t); err != nil {
+		t.Fatal(err)
+	}
+	if e.mas.TokenRequests() == 0 {
+		t.Fatal("no token was requested from the metadata's endpoint")
 	}
 }
 

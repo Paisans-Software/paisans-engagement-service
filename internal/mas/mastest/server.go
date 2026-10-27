@@ -1,5 +1,7 @@
 // Package mastest is a fake Matrix Authentication Service: the admin API
-// shapes of MAS v1.28.0 and a client credentials token endpoint.
+// shapes of MAS v1.28.0 and a client credentials token endpoint. As in MAS,
+// the token endpoint is on a listener of its own (the public one) and the
+// admin listener serves the admin API only.
 package mastest
 
 import (
@@ -27,6 +29,7 @@ type link struct{ provider, subject, userID string }
 
 // Server is the fake. Construct it with New.
 type Server struct {
+	// URL is the admin listener.
 	URL      string
 	ClientID string
 	Secret   string
@@ -38,11 +41,18 @@ type Server struct {
 	FailUsernames atomic.Int32
 	// RefuseSessions, when not zero, is the status personal-session routes answer.
 	RefuseSessions atomic.Int32
+	// RefuseAdmin makes every admin route answer 401, whatever the token.
+	RefuseAdmin atomic.Bool
+	// TokenLifetime is the expires_in the token endpoint answers: zero is
+	// 300 seconds and a negative value leaves the field out. Set it before
+	// the first token request.
+	TokenLifetime int
 
 	mu        sync.Mutex
 	srv       *httptest.Server
+	web       *httptest.Server
 	seq       int
-	tokens    map[string]bool
+	tokens    map[string]string // admin token → its scope
 	tokenReqs int
 	users     []mas.User
 	links     []link
@@ -50,6 +60,7 @@ type Server struct {
 	revoked   map[string]bool
 	lastQuery string
 	lookups   int
+	providers map[string]bool
 }
 
 // New starts a fake MAS that is closed when the test ends.
@@ -59,20 +70,24 @@ func New(t *testing.T) *Server {
 		ClientID:      "01FAKECLIENT",
 		Secret:        "fake-client-secret-value",
 		VersionString: "v1.28.0",
-		tokens:        map[string]bool{},
+		tokens:        map[string]string{},
 		revoked:       map[string]bool{},
+		providers:     map[string]bool{},
 	}
-	mux := http.NewServeMux()
-	mux.HandleFunc("/oauth2/token", s.handleToken)
-	mux.HandleFunc("/api/admin/v1/", s.handleAdmin)
-	s.srv = httptest.NewServer(mux)
+	admin := http.NewServeMux()
+	admin.HandleFunc("/api/admin/v1/", s.handleAdmin)
+	s.srv = httptest.NewServer(admin)
 	s.URL = s.srv.URL
 	t.Cleanup(s.srv.Close)
+	web := http.NewServeMux()
+	web.HandleFunc("/oauth2/token", s.handleToken)
+	s.web = httptest.NewServer(web)
+	t.Cleanup(s.web.Close)
 	return s
 }
 
-// TokenURL is the fake's token endpoint.
-func (s *Server) TokenURL() string { return s.URL + "/oauth2/token" }
+// TokenURL is the fake's token endpoint, on its public listener.
+func (s *Server) TokenURL() string { return s.web.URL + "/oauth2/token" }
 
 func (s *Server) nextID() string {
 	s.seq++
@@ -86,6 +101,14 @@ func (s *Server) AddUser(username string, created time.Time) string {
 	id := s.nextID()
 	s.users = append(s.users, mas.User{ID: id, Username: username, CreatedAt: created})
 	return id
+}
+
+// AddProvider registers an upstream provider that has no links yet. The
+// link list answers 404 for a provider filter that names no known provider.
+func (s *Server) AddProvider(id string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.providers[id] = true
 }
 
 // Link adds an upstream link; an empty userID is a link with a null user.
@@ -102,6 +125,17 @@ func (s *Server) Deactivate(id string) {
 	for i := range s.users {
 		if s.users[i].ID == id {
 			s.users[i].Deactivated = true
+		}
+	}
+}
+
+// Lock marks the user locked.
+func (s *Server) Lock(id string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for i := range s.users {
+		if s.users[i].ID == id {
+			s.users[i].Locked = true
 		}
 	}
 }
@@ -152,7 +186,7 @@ func (s *Server) RevokeSession(id string) {
 func (s *Server) ExpireTokens() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.tokens = map[string]bool{}
+	s.tokens = map[string]string{}
 }
 
 func (s *Server) handleToken(w http.ResponseWriter, r *http.Request) {
@@ -165,20 +199,25 @@ func (s *Server) handleToken(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, `{"error":"invalid_client"}`, http.StatusUnauthorized)
 		return
 	}
-	if err := r.ParseForm(); err != nil ||
-		r.PostForm.Get("grant_type") != "client_credentials" ||
-		r.PostForm.Get("scope") != "urn:mas:admin" {
+	if err := r.ParseForm(); err != nil || r.PostForm.Get("grant_type") != "client_credentials" {
 		http.Error(w, `{"error":"invalid_request"}`, http.StatusBadRequest)
 		return
 	}
+	scope := r.PostForm.Get("scope")
 	s.mu.Lock()
 	s.tokenReqs++
 	tok := fmt.Sprintf("mas_tok_%d", s.tokenReqs)
-	s.tokens[tok] = true
+	s.tokens[tok] = scope
+	life := s.TokenLifetime
 	s.mu.Unlock()
-	writeJSON(w, http.StatusOK, map[string]any{
-		"access_token": tok, "token_type": "Bearer", "expires_in": 300, "scope": "urn:mas:admin",
-	})
+	body := map[string]any{"access_token": tok, "token_type": "Bearer", "scope": scope}
+	if life >= 0 {
+		if life == 0 {
+			life = 300
+		}
+		body["expires_in"] = life
+	}
+	writeJSON(w, http.StatusOK, body)
 }
 
 func writeJSON(w http.ResponseWriter, code int, v any) {
@@ -191,20 +230,20 @@ func resource(typ, id string, attrs map[string]any) map[string]any {
 	return map[string]any{"type": typ, "id": id, "attributes": attrs}
 }
 
-func nullable(t time.Time) any {
+func timestamp(t time.Time) string {
 	return t.UTC().Format(time.RFC3339)
 }
 
 func userResource(u mas.User) map[string]any {
 	var locked, deact any
 	if u.Locked {
-		locked = nullable(time.Now())
+		locked = timestamp(time.Now())
 	}
 	if u.Deactivated {
-		deact = nullable(time.Now())
+		deact = timestamp(time.Now())
 	}
 	return resource("user", u.ID, map[string]any{
-		"username": u.Username, "created_at": nullable(u.CreatedAt),
+		"username": u.Username, "created_at": timestamp(u.CreatedAt),
 		"locked_at": locked, "deactivated_at": deact, "admin": false, "legacy_guest": false,
 	})
 }
@@ -216,9 +255,9 @@ func (s *Server) handleAdmin(w http.ResponseWriter, r *http.Request) {
 	}
 	auth := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
 	s.mu.Lock()
-	valid := s.tokens[auth]
+	scope, issued := s.tokens[auth]
 	s.mu.Unlock()
-	if !valid {
+	if !issued || !hasScope(scope, "urn:mas:admin") || s.RefuseAdmin.Load() {
 		writeJSON(w, http.StatusUnauthorized, map[string]any{"errors": []map[string]string{{"title": "Unauthorized"}}})
 		return
 	}
@@ -241,6 +280,10 @@ func (s *Server) handleAdmin(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Query().Get("filter[subject]") != "" {
 			s.lookups++
 		}
+		if p := r.URL.Query().Get("filter[provider]"); p != "" && !s.knownProvider(p) {
+			writeJSON(w, http.StatusNotFound, map[string]any{"errors": []map[string]string{{"title": "Provider not found"}}})
+			return
+		}
 		s.listLinks(w, r.URL.Query())
 	case strings.HasPrefix(path, "users/by-username/") && r.Method == http.MethodGet:
 		name, _ := url.PathUnescape(strings.TrimPrefix(path, "users/by-username/"))
@@ -257,6 +300,29 @@ func (s *Server) handleAdmin(w http.ResponseWriter, r *http.Request) {
 	default:
 		writeJSON(w, http.StatusNotFound, map[string]any{"errors": []map[string]string{{"title": "Not found"}}})
 	}
+}
+
+func hasScope(scope, want string) bool {
+	for _, f := range strings.Fields(scope) {
+		if f == want {
+			return true
+		}
+	}
+	return false
+}
+
+// knownProvider reports whether the provider is one AddProvider registered
+// or one a link names.
+func (s *Server) knownProvider(p string) bool {
+	if s.providers[p] {
+		return true
+	}
+	for _, l := range s.links {
+		if l.provider == p {
+			return true
+		}
+	}
+	return false
 }
 
 func (s *Server) listLinks(w http.ResponseWriter, q url.Values) {
