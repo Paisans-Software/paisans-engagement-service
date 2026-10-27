@@ -63,6 +63,8 @@ type Server struct {
 	refuse       map[string]refusal
 	syncQ        []syncItem
 	syncSince    []string
+	syncQuery    url.Values
+	sendPaths    []string
 	profiles     map[string]string
 	roomCounter  int
 	eventCounter int
@@ -165,6 +167,20 @@ func (s *Server) SyncSince() []string {
 	return append([]string(nil), s.syncSince...)
 }
 
+// SendPaths lists the escaped request paths of the send PUTs received.
+func (s *Server) SendPaths() []string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]string(nil), s.sendPaths...)
+}
+
+// LastSyncQuery is the query string of the latest /sync request.
+func (s *Server) LastSyncQuery() url.Values {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.syncQuery
+}
+
 // Profile is the stored display name of a user, or "".
 func (s *Server) Profile(user string) string {
 	s.mu.Lock()
@@ -230,8 +246,13 @@ func (s *Server) handle(w http.ResponseWriter, r *http.Request) {
 		s.writeJSON(w, map[string]any{"user_id": "@digestbot:" + s.serverName, "device_id": s.Device})
 	case len(seg) == 3 && seg[0] == "profile" && seg[2] == "displayname":
 		s.profile(w, r, seg[1])
-	case r.Method == "PUT" && len(seg) == 6 && seg[0] == "rooms" && seg[2] == "send":
-		s.send(w, r, seg[1], seg[3], seg[4], seg[5])
+	case r.Method == "PUT" && len(seg) == 5 && seg[0] == "rooms" && seg[2] == "send":
+		s.mu.Lock()
+		s.sendPaths = append(s.sendPaths, path)
+		s.mu.Unlock()
+		s.send(w, r, seg[1], seg[4])
+	case r.Method == "GET" && len(seg) == 5 && seg[0] == "rooms" && seg[2] == "state":
+		s.state(w, seg[1], seg[3], seg[4])
 	case r.Method == "POST" && path == "/_matrix/client/v3/createRoom":
 		s.createRoom(w, r)
 	case r.Method == "GET" && path == "/_matrix/client/v3/sync":
@@ -269,8 +290,7 @@ func (s *Server) profile(w http.ResponseWriter, r *http.Request, user string) {
 	}
 }
 
-func (s *Server) send(w http.ResponseWriter, r *http.Request, room, kind, evType, txn string) {
-	_ = kind
+func (s *Server) send(w http.ResponseWriter, r *http.Request, room, txn string) {
 	var content map[string]any
 	raw, _ := io.ReadAll(r.Body)
 	if err := json.Unmarshal(raw, &content); err != nil {
@@ -290,8 +310,27 @@ func (s *Server) send(w http.ResponseWriter, r *http.Request, room, kind, evType
 		s.sends = append(s.sends, Sent{Room: room, TxnID: txn, Content: content})
 	}
 	s.eventCounter++
-	_ = evType
 	s.writeJSON(w, map[string]any{"event_id": fmt.Sprintf("$event%d", s.eventCounter)})
+}
+
+func (s *Server) state(w http.ResponseWriter, room, evType, key string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	switch {
+	case evType == "m.room.encryption" && key == "":
+		for _, rm := range s.rooms {
+			if rm.ID == room && rm.Encrypted {
+				s.writeJSON(w, map[string]any{"algorithm": "m.megolm.v1.aes-sha2"})
+				return
+			}
+		}
+	case evType == "m.room.member":
+		if m, ok := s.members[room][key]; ok {
+			s.writeJSON(w, map[string]any{"membership": m})
+			return
+		}
+	}
+	s.errorJSON(w, http.StatusNotFound, "M_NOT_FOUND", "Event not found.")
 }
 
 func (s *Server) createRoom(w http.ResponseWriter, r *http.Request) {
@@ -328,6 +367,7 @@ func (s *Server) leaveForget(w http.ResponseWriter, room, action string) {
 func (s *Server) sync(w http.ResponseWriter, r *http.Request) {
 	s.mu.Lock()
 	s.syncSince = append(s.syncSince, r.URL.Query().Get("since"))
+	s.syncQuery = r.URL.Query()
 	var item *syncItem
 	if len(s.syncQ) > 0 {
 		item = &s.syncQ[0]

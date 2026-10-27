@@ -62,6 +62,9 @@ func IsCode(err error, code string) bool {
 	return errors.As(err, &e) && e.Code == code
 }
 
+// maxBody caps a response read; a /sync answer for a busy account can be large.
+const maxBody = 64 << 20
+
 // defaultRetryWait is how long a 429 waits when the homeserver names no time.
 const defaultRetryWait = 5 * time.Second
 
@@ -163,7 +166,7 @@ func (c *Client) doTpl(ctx context.Context, method, tpl, path string, limiters [
 			// The transport error names the URL, which may hold ids; say only that it failed.
 			return fmt.Errorf("matrix %s: %w", op, ErrUnavailable)
 		}
-		data, rerr := io.ReadAll(io.LimitReader(resp.Body, 4<<20))
+		data, rerr := io.ReadAll(io.LimitReader(resp.Body, maxBody))
 		resp.Body.Close()
 		if rerr != nil {
 			if cerr := ctx.Err(); cerr != nil {
