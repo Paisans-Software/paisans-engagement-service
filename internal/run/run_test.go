@@ -718,7 +718,7 @@ func TestPreviewSendsAnotherMembersDigest(t *testing.T) {
 		t.Fatalf("preview messages: %v", countTo(rec.Messages))
 	}
 	m := rec.Messages[0]
-	if m.Subject != "[Preview as two] Your week on Talk · Example Community" {
+	if m.Subject != "[Preview as two] This week on Talk · Example Community" {
 		t.Fatalf("subject %q", m.Subject)
 	}
 	if !strings.Contains(m.Text, "grinders") {
