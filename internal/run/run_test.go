@@ -35,7 +35,10 @@ type fakeSource struct {
 	members []digest.Member
 	joined  map[string]bool
 	hotErr  error
-	hots    atomic.Int32
+	// fresh is the week's unanswered threads, and freshErr fails reading them.
+	fresh    []digest.Item
+	freshErr error
+	hots     atomic.Int32
 	// viewErr fails View for the member with that subject.
 	viewErr map[string]error
 	// ready, when set, holds every runner in Members until all have reached
@@ -77,13 +80,23 @@ func (f *fakeSource) Hot(_ context.Context, from, to time.Time) ([]digest.Item, 
 	return []digest.Item{thread}, nil
 }
 
-func (f *fakeSource) View(_ context.Context, m digest.Member, _, _ time.Time, _ []digest.Item) (digest.View, error) {
+func (f *fakeSource) Unanswered(context.Context, time.Time, time.Time) ([]digest.Item, error) {
+	return f.fresh, f.freshErr
+}
+
+// View counts, as Mbin's does, an item the member wrote as joined.
+func (f *fakeSource) View(_ context.Context, m digest.Member, _, _ time.Time, items []digest.Item) (digest.View, error) {
 	if err := f.viewErr[m.Subject]; err != nil {
 		return digest.View{}, err
 	}
 	v := digest.View{Joined: map[digest.Key]bool{}}
 	if f.joined[m.Subject] {
 		v.Joined[thread.Key] = true
+	}
+	for _, it := range items {
+		if it.AuthorID == m.ID {
+			v.Joined[it.Key] = true
+		}
 	}
 	return v, nil
 }
@@ -793,5 +806,53 @@ func TestPreviewRefusesWithoutADigest(t *testing.T) {
 	}
 	if got := statuses(t, s); len(got) != 0 {
 		t.Fatalf("previews claimed %v", got)
+	}
+}
+
+// A new thread nobody has answered is offered to everyone but its author,
+// and remembered as shown.
+func TestWeekOffersUnanswered(t *testing.T) {
+	s := storetest.New(t)
+	src := newSource()
+	src.fresh = []digest.Item{{
+		Key: digest.Key{Kind: digest.KindPost, ID: 8}, Title: "anyone for tea",
+		URL:      "https://talk.example.org/m/coffee/p/8/-",
+		Magazine: digest.Magazine{ID: 1, Name: "coffee", Title: "Coffee"}, AuthorID: 2,
+	}}
+	rec := &mailtest.Recorder{}
+	if err := runner(s, src, rec).Week(context.Background(), week); err != nil {
+		t.Fatal(err)
+	}
+	if len(rec.Messages) != 3 {
+		t.Fatalf("%d messages", len(rec.Messages))
+	}
+	for _, m := range rec.Messages {
+		offered := strings.Contains(m.Text, "Be the first to reply") && strings.Contains(m.Text, src.fresh[0].URL)
+		if offered == (m.To == "two@example.org") {
+			t.Fatalf("to %s, offered %v:\n%s", m.To, offered, m.Text)
+		}
+	}
+	var n int
+	if err := storetest.Conn(t, s).QueryRow(context.Background(),
+		`SELECT count(*) FROM shown WHERE kind = 'post' AND item_id = 8`).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	if n != 2 {
+		t.Fatalf("shown to %d members", n)
+	}
+}
+
+// Failing to read the unanswered threads fails the run before anyone is
+// claimed, as failing to read the others does.
+func TestWeekUnansweredError(t *testing.T) {
+	s := storetest.New(t)
+	src := newSource()
+	src.freshErr = errors.New("mbin is down")
+	rec := &mailtest.Recorder{}
+	if err := runner(s, src, rec).Week(context.Background(), week); err == nil {
+		t.Fatal("Week succeeded with a failing source")
+	}
+	if got := statuses(t, s); len(got) != 0 || len(rec.Messages) != 0 {
+		t.Fatalf("claimed %v, sent %d", got, len(rec.Messages))
 	}
 }

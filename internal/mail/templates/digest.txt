@@ -12,7 +12,13 @@ This week on {{.Meta}}
 {{.Title}}
 {{.URL}}
 {{.Magazine}}{{if .Label}} · {{.Label}}{{end}} · {{.Figure}}
-{{end}}
+{{end}}{{if .Unanswered}}
+Be the first to reply
+{{range .Unanswered}}
+{{.Title}}
+{{.URL}}
+{{.Magazine}}{{if .Label}} · {{.Label}}{{end}}
+{{end}}{{end}}
 See everything on {{.Instance}}: {{.SiteURL}}
 
 You get this because you're a member of {{.Meta}}.

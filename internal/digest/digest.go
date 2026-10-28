@@ -4,7 +4,10 @@
 package digest
 
 import (
+	"cmp"
+	"math/rand/v2"
 	"regexp"
+	"slices"
 	"sort"
 	"strings"
 	"unicode"
@@ -83,12 +86,16 @@ type Digest struct {
 	Stats    Stats
 	Featured *Featured
 	More     []Item
+	// Unanswered is a few of the week's new threads that nobody has
+	// answered yet, picked by AddUnanswered.
+	Unanswered []Item
 }
 
 const (
-	maxMore      = 5
-	maxFederated = 2
-	excerptRunes = 200
+	maxMore       = 5
+	maxFederated  = 2
+	maxUnanswered = 3
+	excerptRunes  = 200
 )
 
 type ranked struct {
@@ -163,6 +170,48 @@ func Build(items []Item, v View, stats Stats) (Digest, bool) {
 		d.More = append(d.More, r.item)
 	}
 	return d, true
+}
+
+// AddUnanswered picks, at random from r, up to three of fresh, the week's new
+// threads that nobody has answered, for the member to answer first. It leaves
+// out what Build would for the member, anything federated, any thread an
+// earlier digest showed and anything d already shows. The member's own
+// threads are in v.Joined. A nil r uses the package's random source.
+func (d *Digest) AddUnanswered(fresh []Item, v View, r *rand.Rand) {
+	taken := map[Key]bool{}
+	if d.Featured != nil {
+		taken[d.Featured.Item.Key] = true
+	}
+	for _, it := range d.More {
+		taken[it.Key] = true
+	}
+	var pool []Item
+	for _, it := range fresh {
+		if taken[it.Key] || v.Joined[it.Key] || v.Shown[it.Key] || it.Federated ||
+			v.BlockedMagazines[it.Magazine.ID] || v.BannedMagazines[it.Magazine.ID] ||
+			v.BlockedUsers[it.AuthorID] {
+			continue
+		}
+		taken[it.Key] = true
+		pool = append(pool, it)
+	}
+	// Sorted first, so the pick depends on r alone and not on the order the
+	// items came in.
+	slices.SortFunc(pool, func(a, b Item) int {
+		return cmp.Or(cmp.Compare(a.Key.Kind, b.Key.Kind), cmp.Compare(a.Key.ID, b.Key.ID))
+	})
+	intN := rand.IntN
+	if r != nil {
+		intN = r.IntN
+	}
+	n := min(len(pool), maxUnanswered)
+	for i := range n {
+		j := i + intN(len(pool)-i)
+		pool[i], pool[j] = pool[j], pool[i]
+	}
+	if n > 0 {
+		d.Unanswered = pool[:n]
+	}
 }
 
 // rank weighs the engagement figures. A followed magazine counts for more,

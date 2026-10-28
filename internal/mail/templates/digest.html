@@ -24,7 +24,12 @@
 <a href="{{.URL}}" style="color:#1144cc;text-decoration:none;font-weight:600;">{{.Title}}</a>
 <div style="color:#888888;font-size:12px;"><span style="color:#22aa66;font-weight:600;">{{.Magazine}}</span>{{if .Label}} · {{.Label}}{{end}} · {{.Figure}}</div>
 </div>
-{{end}}<div style="text-align:center;"><a href="{{.SiteURL}}" style="display:inline-block;background:#1144cc;color:#ffffff;padding:7px 12px;border-radius:4px;font-size:13px;margin-top:10px;text-decoration:none;">See everything on {{.Instance}}</a></div>
+{{end}}{{if .Unanswered}}<div style="margin:14px 0 0;font-size:13px;font-weight:600;">Be the first to reply</div>
+{{range .Unanswered}}<div style="padding:9px 0;border-bottom:1px solid #eeeeee;">
+<a href="{{.URL}}" style="color:#1144cc;text-decoration:none;font-weight:600;">{{.Title}}</a>
+<div style="color:#888888;font-size:12px;"><span style="color:#22aa66;font-weight:600;">{{.Magazine}}</span>{{if .Label}} · {{.Label}}{{end}}</div>
+</div>
+{{end}}{{end}}<div style="text-align:center;"><a href="{{.SiteURL}}" style="display:inline-block;background:#1144cc;color:#ffffff;padding:7px 12px;border-radius:4px;font-size:13px;margin-top:10px;text-decoration:none;">See everything on {{.Instance}}</a></div>
 <div style="margin-top:14px;color:#999999;font-size:11px;text-align:center;">You get this because you're a member of {{.Meta}}.<br><a href="{{.Unsubscribe}}" style="color:#999999;">Unsubscribe from the weekly digest</a></div>
 </td></tr>
 </table>

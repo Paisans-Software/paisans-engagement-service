@@ -8,6 +8,7 @@ All notable changes to this project are documented here, in the
 ### Added
 
 - A `--preview` option for `send --member` that mails the member the digest a brand-new member would get this week, without claiming them for the week.
+- A "Be the first to reply" section in the digest, offering each member up to three of the week's new threads and microblog posts that nobody has answered yet.
 
 ### Changed
 

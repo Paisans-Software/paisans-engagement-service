@@ -181,3 +181,44 @@ func TestRenderReturningFigure(t *testing.T) {
 		}
 	}
 }
+
+// The week's unanswered threads have a section of their own, after the list,
+// with no figure, since there is nothing to count yet.
+func TestRenderUnanswered(t *testing.T) {
+	d := sample()
+	d.Unanswered = []digest.Item{item(4, "kettles"), item(5, "beans")}
+	d.Unanswered[0].Comments, d.Unanswered[0].Score = 0, 0
+	d.Unanswered[1].Key.Kind = digest.KindPost
+	m := render(t, d)
+	for name, part := range map[string]string{"text": m.Text, "html": m.HTML} {
+		head := strings.Index(part, "Be the first to reply")
+		if head < 0 || strings.Count(part, "Be the first to reply") != 1 {
+			t.Fatalf("%s: heading missing:\n%s", name, part)
+		}
+		if strings.Index(part, d.More[1].URL) > head || strings.Index(part, "See everything on") < head {
+			t.Fatalf("%s: section out of place:\n%s", name, part)
+		}
+		for _, it := range d.Unanswered {
+			if i := strings.Index(part, it.URL); i < head {
+				t.Fatalf("%s: %s missing from the section:\n%s", name, it.URL, part)
+			}
+		}
+		section := part[head:strings.Index(part, "See everything on")]
+		if strings.Contains(section, "vote") || strings.Contains(section, "comment") {
+			t.Fatalf("%s: section has a figure:\n%s", name, section)
+		}
+		if strings.Count(section, "microblog") != 1 {
+			t.Fatalf("%s: post not labelled:\n%s", name, section)
+		}
+	}
+	if !strings.Contains(m.Text, "\nkettles\nhttps://talk.example.org/m/coffee/t/kettles\n!coffee\n") {
+		t.Fatalf("text layout:\n%s", m.Text)
+	}
+}
+
+func TestRenderNoUnanswered(t *testing.T) {
+	m := render(t, sample())
+	if strings.Contains(m.HTML+m.Text, "Be the first") {
+		t.Fatal("empty section rendered")
+	}
+}

@@ -37,6 +37,8 @@ type view struct {
 	Stats                                       digest.Stats
 	Featured                                    *featuredView
 	More                                        []itemView
+	// Unanswered carries no figure: there is nothing to count yet.
+	Unanswered []itemView
 }
 
 // Render builds the message for one member. from and to are the window; the
@@ -58,6 +60,11 @@ func Render(d digest.Digest, n Names, siteURL, unsubscribeURL string, from, to t
 	}
 	for _, it := range d.More {
 		v.More = append(v.More, toView(it))
+	}
+	for _, it := range d.Unanswered {
+		iv := toView(it)
+		iv.Figure = ""
+		v.Unanswered = append(v.Unanswered, iv)
 	}
 
 	var html, text bytes.Buffer
