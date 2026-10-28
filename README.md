@@ -24,7 +24,7 @@ On a deployment with a Matrix homeserver, a member gets the same week's digest a
   Your weekly digest from <meta title>
 
   • <thread title>
-  • <thread title>
+  • "<microblog post>"
   • <thread title>
 
   Read the whole digest: <web digest link>
@@ -32,7 +32,7 @@ On a deployment with a Matrix homeserver, a member gets the same week's digest a
   Reply stop to stop these messages.
   ```
 
-  The titles are the first three threads of that member's email, the featured one first, each linking to its thread. Microblog posts have no title and are skipped. A member with nothing new gets no message.
+  The lines are the first five threads and microblog posts of that member's email, the featured one first, each linking to its thread or post. A microblog post has no title, so its text is quoted, as in the email. A member with nothing new gets no message.
 * **The room.** One per member, created by the bot with `preset: private_chat`, `is_direct`, the member invited, `m.federate: false`, and history visible from the invite. The member is at power level 0 and sending `m.room.encryption` takes 100, so a member cannot turn encryption on. The service checks the room after creating it and abandons one that came out encrypted. A member who has not accepted the invite keeps receiving the message in the room.
 * **Commands.** Matched case insensitively, as the whole message, after trimming whitespace and surrounding punctuation:
 
@@ -51,7 +51,7 @@ On a deployment with a Matrix homeserver, a member gets the same week's digest a
 
 ## The web digest
 
-Each sent digest can be read at `/d/{token}` on the engagement hostname, with no login. The page is the digest as it was sent that week, stored at send time and not recomputed, so it always agrees with the message's three titles. It has the email's content without the unsubscribe link.
+Each sent digest can be read at `/d/{token}` on the engagement hostname, with no login. The page is the digest as it was sent that week, stored at send time and not recomputed, so it always agrees with the message's lines. It has the email's content without the unsubscribe link.
 
 The token names the member and the week and is signed with `ENGAGEMENT_SIGNING_KEY`, with a purpose that differs from the unsubscribe token, so neither is accepted as the other. The digest expires 28 days after it was sent, and the stored copy is deleted then. Only `GET` and `HEAD` are answered, and opening a digest records nothing. The page carries `Referrer-Policy: no-referrer`, `X-Robots-Tag: noindex` and `Cache-Control: private, no-store`. A token that is bad, unknown or expired gets the same 404 and the same body as a bad unsubscribe link.
 
