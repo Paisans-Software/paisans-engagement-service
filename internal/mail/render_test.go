@@ -141,13 +141,31 @@ func TestRenderTextPartHasEveryLink(t *testing.T) {
 	}
 }
 
-// A microblog post looks like any thread: no label marks it.
-func TestRenderPostUnlabelled(t *testing.T) {
+// A microblog post has no title, so the email quotes its text and links
+// the magazine line to it, featured, listed or unanswered.
+func TestRenderPostQuoted(t *testing.T) {
 	d := sample()
+	d.Featured.Item.Key.Kind = digest.KindPost
 	d.More[0].Key.Kind = digest.KindPost
+	d.Unanswered = []digest.Item{item(4, "kettles")}
+	d.Unanswered[0].Key.Kind = digest.KindPost
+	d.UnansweredHeading = "New posts"
 	m := render(t, d)
 	if strings.Contains(m.Text, "microblog") || strings.Contains(m.HTML, "microblog") {
 		t.Fatalf("post labelled:\n%s", m.Text)
+	}
+	for _, it := range []digest.Item{d.Featured.Item, d.More[0], d.Unanswered[0]} {
+		if !strings.Contains(m.Text, "\n\""+it.Title+"\"\n!coffee\n"+it.URL+"\n") {
+			t.Fatalf("text: %s not quoted:\n%s", it.Title, m.Text)
+		}
+		if !strings.Contains(m.HTML, "&ldquo;"+it.Title+"&rdquo;") ||
+			!strings.Contains(m.HTML, `<a href="`+it.URL+`" style="color:#22aa66;text-decoration:none;font-weight:600;">!coffee</a>`) {
+			t.Fatalf("html: %s not quoted:\n%s", it.Title, m.HTML)
+		}
+	}
+	// The featured post still quotes its best comment after its own text.
+	if !strings.Contains(m.Text, d.Featured.Item.URL+"\n\"hand grinders win\"\n") {
+		t.Fatalf("featured comment excerpt:\n%s", m.Text)
 	}
 }
 

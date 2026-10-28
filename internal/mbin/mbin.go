@@ -16,8 +16,9 @@ import (
 	"github.com/paisans-software/paisans-engagement-service/internal/digest"
 )
 
-// titleRunes is how much of a microblog post stands in for its title.
-const titleRunes = 120
+// titleRunes is how much of a microblog post stands in for its title, which
+// the email quotes.
+const titleRunes = 200
 
 type Source struct {
 	pool    *pgxpool.Pool

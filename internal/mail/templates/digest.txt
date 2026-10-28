@@ -3,22 +3,21 @@ This week on {{.Meta}}
 
 {{.Stats.NewThreads}} new threads | {{.Stats.Comments}} comments | {{.Stats.NewMembers}} new members
 {{with .Featured}}
-{{.Title}}
-{{.URL}}
-{{.Magazine}}
+{{template "item" .}}
 {{if .Excerpt}}"{{.Excerpt}}"
 {{end}}{{end}}{{range .More}}
-{{.Title}}
-{{.URL}}
-{{.Magazine}}
+{{template "item" .}}
 {{end}}{{if .Unanswered}}
 {{.UnansweredHeading}}
 {{range .Unanswered}}
-{{.Title}}
-{{.URL}}
-{{.Magazine}}
+{{template "item" .}}
 {{end}}{{end}}
 See everything on {{.Instance}}: {{.SiteURL}}
 
 You get this because you're a member of {{.Meta}}.
 Unsubscribe from the weekly digest: {{.Unsubscribe}}
+{{define "item"}}{{if .Post}}"{{.Title}}"
+{{.Magazine}}
+{{.URL}}{{else}}{{.Title}}
+{{.URL}}
+{{.Magazine}}{{end}}{{end}}

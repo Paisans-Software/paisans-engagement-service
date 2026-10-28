@@ -24,9 +24,11 @@ var (
 type Names struct{ Instance, Meta string }
 
 // itemView is what the email shows of a thread: its title, link and
-// magazine.
+// magazine. A microblog post has no title, so Post has the email quote its
+// text and link the magazine line to it instead.
 type itemView struct {
 	Title, URL, Magazine string
+	Post                 bool
 }
 
 type featuredView struct {
@@ -77,5 +79,5 @@ func Render(d digest.Digest, n Names, siteURL, unsubscribeURL string, from, to t
 }
 
 func toView(it digest.Item) itemView {
-	return itemView{Title: it.Title, URL: it.URL, Magazine: "!" + it.Magazine.Name}
+	return itemView{Title: it.Title, URL: it.URL, Magazine: "!" + it.Magazine.Name, Post: it.Key.Kind == digest.KindPost}
 }
