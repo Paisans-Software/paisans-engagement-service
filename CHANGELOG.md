@@ -8,9 +8,11 @@ All notable changes to this project are documented here, in the
 ### Added
 
 - A `--preview` option for `send --member` that mails the member the digest a brand-new member would get this week, without claiming them for the week.
+- A section in the digest offering each member up to three of the week's new threads and microblog posts that nobody has answered yet.
 
 ### Changed
 
+- Every thread in the digest shows only its title and magazine, with no counts, featured label or microblog label. A microblog post is quoted instead of titled.
 - The digest email's subject and heading read "This week on" the community rather than "Your week on".
 
 ## [0.1.1] - 2026-10-27

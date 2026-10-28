@@ -5,6 +5,8 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"math/rand/v2"
+	"slices"
 	"time"
 
 	"github.com/paisans-software/paisans-engagement-service/internal/digest"
@@ -17,6 +19,7 @@ import (
 type Source interface {
 	Members(ctx context.Context) ([]digest.Member, error)
 	Hot(ctx context.Context, from, to time.Time) ([]digest.Item, error)
+	Unanswered(ctx context.Context, from, to time.Time) ([]digest.Item, error)
 	View(ctx context.Context, m digest.Member, from, to time.Time, items []digest.Item) (digest.View, error)
 	Stats(ctx context.Context, from, to time.Time) (digest.Stats, error)
 }
@@ -33,6 +36,9 @@ type Runner struct {
 	// so a test send mails one person. Nobody else is claimed, so a later
 	// full run for the same week still reaches them.
 	Only string
+	// Rand picks the unanswered threads each digest offers; nil is the
+	// random package's own source.
+	Rand *rand.Rand
 }
 
 // Week sends the digest for the week that ends at week, the send time. Every
@@ -66,6 +72,10 @@ func (r *Runner) Week(ctx context.Context, week time.Time) error {
 	if err != nil {
 		return fmt.Errorf("read the week's threads: %w", err)
 	}
+	fresh, err := r.Source.Unanswered(ctx, from, week)
+	if err != nil {
+		return fmt.Errorf("read the week's unanswered threads: %w", err)
+	}
 	stats, err := r.Source.Stats(ctx, from, week)
 	if err != nil {
 		return fmt.Errorf("read the week's figures: %w", err)
@@ -90,7 +100,7 @@ func (r *Runner) Week(ctx context.Context, week time.Time) error {
 			n.skipped++
 			continue
 		}
-		status, shown, err := r.one(ctx, m, from, week, items, stats)
+		status, shown, err := r.one(ctx, m, from, week, items, fresh, stats)
 		// Released or finished even when ctx has ended, or the member would
 		// stay claimed and unsent for the week.
 		wctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
@@ -147,7 +157,7 @@ func only(members []digest.Member, username string) []digest.Member {
 // the relay, so the claim is to be released. The error explains a failure; it
 // carries no address, since the sender's errors are already reduced to a
 // reason and a code.
-func (r *Runner) one(ctx context.Context, m digest.Member, from, to time.Time, items []digest.Item, stats digest.Stats) (store.Status, []store.Item, error) {
+func (r *Runner) one(ctx context.Context, m digest.Member, from, to time.Time, items, fresh []digest.Item, stats digest.Stats) (store.Status, []store.Item, error) {
 	unsub, err := r.Store.Unsubscribed(ctx, m.Subject)
 	if err != nil {
 		return "", nil, fmt.Errorf("read unsubscribes: %w", err)
@@ -155,7 +165,9 @@ func (r *Runner) one(ctx context.Context, m digest.Member, from, to time.Time, i
 	if unsub {
 		return store.StatusUnsubscribed, nil, nil
 	}
-	v, err := r.Source.View(ctx, m, from, to, items)
+	// The unanswered threads are asked about too, so the member's own are
+	// among the joined.
+	v, err := r.Source.View(ctx, m, from, to, slices.Concat(items, fresh))
 	if err != nil {
 		return "", nil, fmt.Errorf("read the member's view: %w", err)
 	}
@@ -171,6 +183,7 @@ func (r *Runner) one(ctx context.Context, m digest.Member, from, to time.Time, i
 	if !ok {
 		return store.StatusEmpty, nil, nil
 	}
+	d.AddUnanswered(fresh, v, r.Rand)
 	msg, err := mail.Render(d, r.Names, r.SiteURL, r.PublicURL+"/u/"+token.Sign(r.Key, m.Subject), from, to)
 	if err != nil {
 		return "", nil, fmt.Errorf("render: %w", err)
@@ -220,6 +233,10 @@ func (r *Runner) Preview(ctx context.Context, week time.Time, username string) e
 	if err != nil {
 		return fmt.Errorf("read the week's threads: %w", err)
 	}
+	fresh, err := r.Source.Unanswered(ctx, from, week)
+	if err != nil {
+		return fmt.Errorf("read the week's unanswered threads: %w", err)
+	}
 	stats, err := r.Source.Stats(ctx, from, week)
 	if err != nil {
 		return fmt.Errorf("read the week's figures: %w", err)
@@ -228,6 +245,7 @@ func (r *Runner) Preview(ctx context.Context, week time.Time, username string) e
 	if !ok {
 		return errors.New("the week has nothing for even a new member, so there is no digest to preview")
 	}
+	d.AddUnanswered(fresh, digest.View{}, r.Rand)
 	msg, err := mail.Render(d, r.Names, r.SiteURL, r.PublicURL+"/u/"+token.Sign(r.Key, m.Subject), from, week)
 	if err != nil {
 		return fmt.Errorf("render: %w", err)
@@ -247,7 +265,7 @@ func sent(d digest.Digest) []store.Item {
 	if d.Featured != nil {
 		out = append(out, store.Item{Kind: string(d.Featured.Item.Key.Kind), ID: d.Featured.Item.Key.ID})
 	}
-	for _, it := range d.More {
+	for _, it := range slices.Concat(d.More, d.Unanswered) {
 		out = append(out, store.Item{Kind: string(it.Key.Kind), ID: it.Key.ID})
 	}
 	return out
