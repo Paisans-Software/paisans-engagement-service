@@ -175,6 +175,12 @@ func (b *Bot) guard(ctx context.Context, key string, err error) error {
 	return nil
 }
 
+// again reports whether the event under key has attempts left after the
+// current one, which guard counts when the error is returned.
+func (b *Bot) again(key string) bool {
+	return b.attempts[key]+1 < maxAttempts
+}
+
 // handle acts on one /sync batch. With initial set only invitations are
 // answered: the timeline of a first sync is history.
 func (b *Bot) handle(ctx context.Context, r *matrix.SyncResponse, initial bool) error {
@@ -286,9 +292,16 @@ func (b *Bot) inviter(events []matrix.Event) (sender, eventID string) {
 	return "", ""
 }
 
+// errMembership marks a failed membership check, which is tried again like
+// any other store error, up to maxAttempts times, before the invitation is
+// rejected.
+var errMembership = errors.New("the membership check failed")
+
 // invite answers an invitation: a member's gets a fresh room, any other is
-// rejected. The eligibility lookups come first, so a failure of MAS or Mbin is
-// retried with the invitation still pending. The invitation is rejected
+// rejected. The eligibility lookups come first, so an unavailable MAS or
+// homeserver is retried with the invitation still pending. An error of Mbin
+// or the store is retried for maxAttempts batches, then the invitation is
+// rejected and the member can invite again. The invitation is rejected
 // before the room is made; after that a failure can only lose the greeting,
 // and a replayed batch cannot invite the member a second time.
 func (b *Bot) invite(ctx context.Context, room string, state []matrix.Event) error {
@@ -297,7 +310,8 @@ func (b *Bot) invite(ctx context.Context, room string, state []matrix.Event) err
 		eventID = room // stripped state carries no event id
 	}
 	subject, masUser, ok, err := b.inviterMember(ctx, sender)
-	if err != nil && (ctx.Err() != nil || errors.Is(err, ErrUnavailable)) {
+	key := "invite\x00" + room
+	if err != nil && (ctx.Err() != nil || errors.Is(err, ErrUnavailable) || (errors.Is(err, errMembership) && b.again(key))) {
 		return err
 	}
 	if err != nil {
@@ -307,7 +321,7 @@ func (b *Bot) invite(ctx context.Context, room string, state []matrix.Event) err
 	if ok {
 		defer b.lockSubject(subject)()
 		if err := b.prepareAnswer(ctx, subject, masUser, sender); err != nil {
-			if ctx.Err() != nil || errors.Is(err, ErrUnavailable) {
+			if ctx.Err() != nil || errors.Is(err, ErrUnavailable) || (!refused(err) && b.again(key)) {
 				return err
 			}
 			slog.Warn("matrix bot: a member's invitation was rejected", "reason", reason(err))
@@ -343,8 +357,9 @@ func (b *Bot) inviterMember(ctx context.Context, sender string) (subject, masUse
 	}
 	member, err := b.members.IsMember(ctx, subject)
 	if err != nil {
-		// Mbin could not say; the invitation waits rather than rejecting a member.
-		return "", "", false, fmt.Errorf("%w: the membership check failed: %w", ErrUnavailable, err)
+		// Mbin could not say; the invitation waits a few batches rather than
+		// rejecting a member at once, and no longer than that.
+		return "", "", false, fmt.Errorf("%w: %w", errMembership, err)
 	}
 	if !member {
 		return "", "", false, nil

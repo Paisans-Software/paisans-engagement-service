@@ -464,9 +464,30 @@ func TestStopAsReply(t *testing.T) {
 	}
 }
 
+// syncAttempts is how many times the fake homeserver was asked for the batch
+// that follows since.
+func syncAttempts(e *env, since string) int {
+	n := 0
+	for _, s := range e.syn.SyncSince() {
+		if s == since {
+			n++
+		}
+	}
+	return n
+}
+
+func roomLeft(e *env, id string) bool {
+	for _, r := range e.syn.Rooms() {
+		if r.ID == id {
+			return r.Left
+		}
+	}
+	return false
+}
+
 // A member's invitation that cannot be prepared for a reason other than an
-// outage is rejected, not left pending.
-func TestInvitePrepareFailureRejects(t *testing.T) {
+// outage is tried for three batches, then rejected, not left pending.
+func TestInvitePrepareFailureRejectsAfterThreeAttempts(t *testing.T) {
 	e, b, _ := memberRoom(t)
 	prime(t, e)
 	e.syn.AddRoom("!invite:example.org")
@@ -475,57 +496,89 @@ func TestInvitePrepareFailureRejects(t *testing.T) {
 	b.wait = func(context.Context, time.Duration) error { return nil }
 	syncOf(e, b, [2]string{"b1", invited("!invite:example.org", "@one:example.org")})
 	listenUntil(t, e, b, "b1")
-	for _, r := range e.syn.Rooms() {
-		if r.ID == "!invite:example.org" && !r.Left {
-			t.Error("invite not rejected")
-		}
+	if n := syncAttempts(e, "start"); n != 3 {
+		t.Fatalf("%d attempts", n)
+	}
+	if !roomLeft(e, "!invite:example.org") {
+		t.Error("invite not rejected")
 	}
 }
 
-type failingChecker struct{}
-
-func (failingChecker) IsMember(context.Context, string) (bool, error) {
-	return false, errors.New("mbin is down")
-}
-
-// An invitation whose membership check fails waits for Mbin rather than
-// rejecting a member.
-func TestInviteMembershipCheckFailureWaits(t *testing.T) {
+// A store error that clears within the attempts still gets the invitation
+// answered.
+func TestInvitePrepareTransientFailureAnswers(t *testing.T) {
 	e, b, _ := memberRoom(t)
 	prime(t, e)
-	b.members = failingChecker{}
 	e.syn.AddRoom("!invite:example.org")
+	restore := failingStore(t, e)
 	var waits atomic.Int32
-	b.wait = func(ctx context.Context, d time.Duration) error {
-		waits.Add(1)
-		t := time.NewTimer(5 * time.Millisecond)
-		defer t.Stop()
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		case <-t.C:
-			return nil
+	b.wait = func(context.Context, time.Duration) error {
+		if waits.Add(1) == 1 {
+			restore()
 		}
+		return nil
 	}
 	syncOf(e, b, [2]string{"b1", invited("!invite:example.org", "@one:example.org")})
-	ctx, cancel := context.WithCancel(context.Background())
-	done := make(chan error, 1)
-	go func() { done <- b.Listen(ctx) }()
-	deadline := time.Now().Add(5 * time.Second)
-	for waits.Load() < 5 && time.Now().Before(deadline) {
-		time.Sleep(5 * time.Millisecond)
+	listenUntil(t, e, b, "b1")
+	if !roomLeft(e, "!invite:example.org") {
+		t.Error("invite room not left")
 	}
-	cancel()
-	<-done
-	if waits.Load() < 5 {
-		t.Fatalf("%d retries", waits.Load())
+	if s := e.syn.Sends(); len(s) != 1 || s[0].Content["body"] != ReplyStarted {
+		t.Fatalf("sends = %+v", s)
 	}
-	for _, r := range e.syn.Rooms() {
-		if r.ID == "!invite:example.org" && r.Left {
-			t.Error("a member's invite was rejected over an Mbin outage")
-		}
+}
+
+// flakyChecker fails its first fails calls, then says the member is one.
+type flakyChecker struct {
+	fails int
+	calls atomic.Int32
+}
+
+func (c *flakyChecker) IsMember(context.Context, string) (bool, error) {
+	if int(c.calls.Add(1)) <= c.fails {
+		return false, errors.New("mbin is down")
 	}
-	if e.state(t, keySyncToken) != "start" {
-		t.Fatal("the batch was passed over")
+	return true, nil
+}
+
+// An invitation whose membership check keeps failing is retried for three
+// batches, so a persistent Mbin error cannot stall the listener, and then
+// rejected.
+func TestInviteMembershipCheckFailureRejectsAfterThreeAttempts(t *testing.T) {
+	e, b, _ := memberRoom(t)
+	prime(t, e)
+	c := &flakyChecker{fails: 1 << 30}
+	b.members = c
+	e.syn.AddRoom("!invite:example.org")
+	b.wait = func(context.Context, time.Duration) error { return nil }
+	syncOf(e, b, [2]string{"b1", invited("!invite:example.org", "@one:example.org")})
+	listenUntil(t, e, b, "b1")
+	if n := c.calls.Load(); n != 3 {
+		t.Fatalf("%d membership checks", n)
+	}
+	if !roomLeft(e, "!invite:example.org") {
+		t.Error("invite not rejected")
+	}
+	if len(e.syn.Sends()) != 0 {
+		t.Error("a rejected invite was greeted")
+	}
+}
+
+// A membership check that recovers within the attempts still answers the
+// invitation.
+func TestInviteMembershipCheckTransientFailureAnswers(t *testing.T) {
+	e, b, _ := memberRoom(t)
+	prime(t, e)
+	c := &flakyChecker{fails: 2}
+	b.members = c
+	e.syn.AddRoom("!invite:example.org")
+	b.wait = func(context.Context, time.Duration) error { return nil }
+	syncOf(e, b, [2]string{"b1", invited("!invite:example.org", "@one:example.org")})
+	listenUntil(t, e, b, "b1")
+	if s := e.syn.Sends(); len(s) != 1 || s[0].Content["body"] != ReplyStarted {
+		t.Fatalf("sends = %+v", s)
+	}
+	if n := c.calls.Load(); n != 3 {
+		t.Fatalf("%d membership checks", n)
 	}
 }
