@@ -5,7 +5,6 @@ package mbin
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"strconv"
 	"strings"
@@ -67,26 +66,16 @@ func (s *Source) Hot(ctx context.Context, from, to time.Time) ([]digest.Item, er
 	}
 	items, err := pgx.CollectRows(rows, func(r pgx.CollectableRow) (digest.Item, error) {
 		var (
-			it       digest.Item
-			kind     string
-			slug     *string
-			text     *string
-			comments []byte
-			newTop   []byte
+			it         digest.Item
+			kind       string
+			slug, text *string
 		)
 		err := r.Scan(&kind, &it.Key.ID, &it.AuthorID, &slug, &text, &it.Score, &it.Comments, &it.Federated,
-			&it.Magazine.ID, &it.Magazine.Name, &it.Magazine.Title, &it.Participants, &it.NewComments,
-			&comments, &newTop)
+			&it.Magazine.ID, &it.Magazine.Name, &it.Magazine.Title, &it.Participants, &it.NewComments)
 		if err != nil {
 			return it, err
 		}
 		s.dress(&it, kind, slug, text)
-		if it.TopComments, err = topComments(comments); err != nil {
-			return it, err
-		}
-		if it.TopNew, err = topComments(newTop); err != nil {
-			return it, err
-		}
 		return it, nil
 	})
 	if err != nil {
@@ -137,26 +126,6 @@ func (s *Source) dress(it *digest.Item, kind string, slug, text *string) {
 	}
 	it.Magazine.Title = oneLine(it.Magazine.Title)
 	it.URL = s.url(*it, slug)
-}
-
-// topComments decodes a JSON list of comments from hotSQL; nil is none.
-func topComments(b []byte) ([]digest.Comment, error) {
-	if b == nil {
-		return nil, nil
-	}
-	var top []struct {
-		Author int64  `json:"author"`
-		Body   string `json:"body"`
-		Votes  int    `json:"votes"`
-	}
-	if err := json.Unmarshal(b, &top); err != nil {
-		return nil, err
-	}
-	var out []digest.Comment
-	for _, c := range top {
-		out = append(out, digest.Comment{AuthorID: c.Author, Body: c.Body, Votes: c.Votes})
-	}
-	return out, nil
 }
 
 // oneLine collapses every run of whitespace, newlines included, to a single

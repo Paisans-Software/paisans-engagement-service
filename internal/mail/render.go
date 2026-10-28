@@ -23,22 +23,19 @@ var (
 // subject, heading and footer; Instance only in the button.
 type Names struct{ Instance, Meta string }
 
+// itemView is what the email shows of a thread: its title, link and
+// magazine, and the microblog label for a post.
 type itemView struct {
-	Title, URL, Magazine, Label, Figure string
-}
-
-type featuredView struct {
-	itemView
-	Excerpt string
+	Title, URL, Magazine, Label string
 }
 
 type view struct {
 	Meta, Instance, SiteURL, Unsubscribe, Dates string
 	Stats                                       digest.Stats
-	Featured                                    *featuredView
+	Featured                                    *itemView
 	More                                        []itemView
-	// Unanswered carries no figure: there is nothing to count yet.
-	Unanswered []itemView
+	Unanswered                                  []itemView
+	UnansweredHeading                           string
 }
 
 // Render builds the message for one member. from and to are the window; the
@@ -47,24 +44,17 @@ func Render(d digest.Digest, n Names, siteURL, unsubscribeURL string, from, to t
 	v := view{
 		Meta: n.Meta, Instance: n.Instance, SiteURL: siteURL, Unsubscribe: unsubscribeURL,
 		Dates: from.Format("Jan 2") + " – " + to.AddDate(0, 0, -1).Format("Jan 2"),
-		Stats: d.Stats,
+		Stats: d.Stats, UnansweredHeading: d.UnansweredHeading,
 	}
-	if f := d.Featured; f != nil {
-		fv := featuredView{itemView: toView(f.Item), Excerpt: f.Excerpt}
-		comments := plural(f.Item.Comments, "comment", "comments")
-		if f.Item.Again {
-			comments = newComments(f.Item)
-		}
-		fv.Figure = fmt.Sprintf("%s · %s", comments, plural(f.Item.Participants, "person joined in", "people joined in"))
+	if d.Featured != nil {
+		fv := toView(d.Featured.Item)
 		v.Featured = &fv
 	}
 	for _, it := range d.More {
 		v.More = append(v.More, toView(it))
 	}
 	for _, it := range d.Unanswered {
-		iv := toView(it)
-		iv.Figure = ""
-		v.Unanswered = append(v.Unanswered, iv)
+		v.Unanswered = append(v.Unanswered, toView(it))
 	}
 
 	var html, text bytes.Buffer
@@ -82,30 +72,10 @@ func Render(d digest.Digest, n Names, siteURL, unsubscribeURL string, from, to t
 	}, nil
 }
 
-// toView gives a list item its one figure: the comment count when there are
-// comments, else the score, and for a thread shown before, its new comments.
 func toView(it digest.Item) itemView {
 	iv := itemView{Title: it.Title, URL: it.URL, Magazine: "!" + it.Magazine.Name}
 	if it.Key.Kind == digest.KindPost {
 		iv.Label = "microblog"
 	}
-	if it.Again {
-		iv.Figure = newComments(it)
-	} else if it.Comments > 0 {
-		iv.Figure = plural(it.Comments, "comment", "comments")
-	} else {
-		iv.Figure = plural(it.Score, "vote", "votes")
-	}
 	return iv
-}
-
-func newComments(it digest.Item) string {
-	return plural(it.NewComments, "new comment", "new comments") + " this week"
-}
-
-func plural(n int, one, many string) string {
-	if n == 1 {
-		return "1 " + one
-	}
-	return fmt.Sprintf("%d %s", n, many)
 }

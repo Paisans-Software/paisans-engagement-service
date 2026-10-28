@@ -643,7 +643,7 @@ func TestShownThreadReturnsOnlyWithNewComments(t *testing.T) {
 	if err := runner(s, laterSource{src, busy}, rec).Week(context.Background(), next.AddDate(0, 0, 7)); err != nil {
 		t.Fatal(err)
 	}
-	if len(rec.Messages) != 3 || !strings.Contains(rec.Messages[0].Text, "2 new comments this week") {
+	if len(rec.Messages) != 3 || !strings.Contains(rec.Messages[0].Text, thread.URL) {
 		t.Fatalf("returning thread: %d messages\n%v", len(rec.Messages), rec.Messages)
 	}
 }
@@ -827,7 +827,7 @@ func TestWeekOffersUnanswered(t *testing.T) {
 		t.Fatalf("%d messages", len(rec.Messages))
 	}
 	for _, m := range rec.Messages {
-		offered := strings.Contains(m.Text, "Be the first to reply") && strings.Contains(m.Text, src.fresh[0].URL)
+		offered := strings.Contains(m.Text, src.fresh[0].URL)
 		if offered == (m.To == "two@example.org") {
 			t.Fatalf("to %s, offered %v:\n%s", m.To, offered, m.Text)
 		}

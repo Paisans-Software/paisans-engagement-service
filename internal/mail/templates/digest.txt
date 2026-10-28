@@ -3,17 +3,15 @@ This week on {{.Meta}}
 
 {{.Stats.NewThreads}} new threads | {{.Stats.Comments}} comments | {{.Stats.NewMembers}} new members
 {{with .Featured}}
-{{.Magazine}} · the big one this week{{if .Label}} · {{.Label}}{{end}}
+{{.Magazine}}{{if .Label}} · {{.Label}}{{end}}
 {{.Title}}
 {{.URL}}
-{{.Figure}}
-{{if .Excerpt}}"{{.Excerpt}}"
-{{end}}{{end}}{{range .More}}
+{{end}}{{range .More}}
 {{.Title}}
 {{.URL}}
-{{.Magazine}}{{if .Label}} · {{.Label}}{{end}} · {{.Figure}}
+{{.Magazine}}{{if .Label}} · {{.Label}}{{end}}
 {{end}}{{if .Unanswered}}
-Be the first to reply
+{{.UnansweredHeading}}
 {{range .Unanswered}}
 {{.Title}}
 {{.URL}}

@@ -33,13 +33,6 @@ type Magazine struct {
 	Name, Title string
 }
 
-// Comment is a local author's comment; federated comments are never loaded.
-type Comment struct {
-	AuthorID int64
-	Body     string
-	Votes    int
-}
-
 type Item struct {
 	Key                    Key
 	Title, URL             string
@@ -48,13 +41,10 @@ type Item struct {
 	Federated              bool
 	Comments, Participants int
 	Score                  int
-	TopComments            []Comment // highest voted first, at most 3, empty for federated
-	// NewComments counts the comments posted this week, and TopNew is the
-	// best of them, chosen as TopComments is.
+	// NewComments counts the comments posted this week.
 	NewComments int
-	TopNew      []Comment
 	// Again is set by Build on an item an earlier digest showed the member,
-	// which is shown by this week's activity alone.
+	// which is ranked by this week's activity alone.
 	Again bool
 }
 
@@ -78,8 +68,7 @@ type View struct {
 type Stats struct{ NewThreads, Comments, NewMembers int }
 
 type Featured struct {
-	Item    Item
-	Excerpt string
+	Item Item
 }
 
 type Digest struct {
@@ -87,15 +76,19 @@ type Digest struct {
 	Featured *Featured
 	More     []Item
 	// Unanswered is a few of the week's new threads that nobody has
-	// answered yet, picked by AddUnanswered.
-	Unanswered []Item
+	// answered yet, and UnansweredHeading the section's heading, both
+	// picked by AddUnanswered.
+	Unanswered        []Item
+	UnansweredHeading string
 }
+
+// unansweredHeadings are the headings the unanswered section may have.
+var unansweredHeadings = []string{"New posts", "No replies yet", "Start the conversation"}
 
 const (
 	maxMore       = 5
 	maxFederated  = 2
 	maxUnanswered = 3
-	excerptRunes  = 200
 )
 
 type ranked struct {
@@ -154,7 +147,7 @@ func Build(items []Item, v View, stats Stats) (Digest, bool) {
 	}
 	if featured >= 0 {
 		it := rs[featured].item
-		d.Featured = &Featured{Item: it, Excerpt: excerpt(it, v)}
+		d.Featured = &Featured{Item: it}
 	}
 	fedSeen := 0
 	for i, r := range rs {
@@ -176,7 +169,8 @@ func Build(items []Item, v View, stats Stats) (Digest, bool) {
 // threads that nobody has answered, for the member to answer first. It leaves
 // out what Build would for the member, anything federated, any thread an
 // earlier digest showed and anything d already shows. The member's own
-// threads are in v.Joined. A nil r uses the package's random source.
+// threads are in v.Joined. It picks the section's heading from r too. A nil r
+// uses the package's random source.
 func (d *Digest) AddUnanswered(fresh []Item, v View, r *rand.Rand) {
 	taken := map[Key]bool{}
 	if d.Featured != nil {
@@ -211,6 +205,7 @@ func (d *Digest) AddUnanswered(fresh []Item, v View, r *rand.Rand) {
 	}
 	if n > 0 {
 		d.Unanswered = pool[:n]
+		d.UnansweredHeading = unansweredHeadings[intN(len(unansweredHeadings))]
 	}
 }
 
@@ -234,25 +229,6 @@ func rank(it Item, v View) float64 {
 		return w * float64(2*it.NewComments+3*it.Participants)
 	}
 	return w * float64(it.Score+2*it.Comments+3*it.Participants)
-}
-
-func excerpt(it Item, v View) string {
-	if it.Federated {
-		return ""
-	}
-	comments := it.TopComments
-	if it.Again {
-		comments = it.TopNew
-	}
-	for _, c := range comments {
-		if v.BlockedUsers[c.AuthorID] {
-			continue
-		}
-		if e := Plain(c.Body, excerptRunes); e != "" {
-			return e
-		}
-	}
-	return ""
 }
 
 // A link's target may hold one level of parentheses, as Wikipedia's do.
