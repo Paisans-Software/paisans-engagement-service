@@ -856,3 +856,28 @@ func TestWeekUnansweredError(t *testing.T) {
 		t.Fatalf("claimed %v, sent %d", got, len(rec.Messages))
 	}
 }
+
+// A preview offers the week's unanswered threads as a blank member gets
+// them, the recipient's own among them, since a blank member wrote nothing.
+func TestPreviewOffersUnanswered(t *testing.T) {
+	s := storetest.New(t)
+	src := newSource()
+	src.fresh = []digest.Item{{
+		Key: digest.Key{Kind: digest.KindPost, ID: 8}, Title: "anyone for tea",
+		URL:      "https://talk.example.org/m/coffee/p/8/-",
+		Magazine: digest.Magazine{ID: 1, Name: "coffee", Title: "Coffee"}, AuthorID: 1,
+	}}
+	rec := &mailtest.Recorder{}
+	if err := runner(s, src, rec).Preview(context.Background(), week, "one"); err != nil {
+		t.Fatal(err)
+	}
+	if len(rec.Messages) != 1 {
+		t.Fatalf("%d messages", len(rec.Messages))
+	}
+	text := rec.Messages[0].Text
+	heading := strings.Contains(text, "New posts") || strings.Contains(text, "No replies yet") ||
+		strings.Contains(text, "Start the conversation")
+	if !heading || !strings.Contains(text, src.fresh[0].URL) {
+		t.Fatalf("no unanswered section in the preview:\n%s", text)
+	}
+}

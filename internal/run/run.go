@@ -233,6 +233,10 @@ func (r *Runner) Preview(ctx context.Context, week time.Time, username string) e
 	if err != nil {
 		return fmt.Errorf("read the week's threads: %w", err)
 	}
+	fresh, err := r.Source.Unanswered(ctx, from, week)
+	if err != nil {
+		return fmt.Errorf("read the week's unanswered threads: %w", err)
+	}
 	stats, err := r.Source.Stats(ctx, from, week)
 	if err != nil {
 		return fmt.Errorf("read the week's figures: %w", err)
@@ -241,6 +245,7 @@ func (r *Runner) Preview(ctx context.Context, week time.Time, username string) e
 	if !ok {
 		return errors.New("the week has nothing for even a new member, so there is no digest to preview")
 	}
+	d.AddUnanswered(fresh, digest.View{}, r.Rand)
 	msg, err := mail.Render(d, r.Names, r.SiteURL, r.PublicURL+"/u/"+token.Sign(r.Key, m.Subject), from, week)
 	if err != nil {
 		return fmt.Errorf("render: %w", err)
