@@ -9,18 +9,24 @@ import (
 
 func TestParseSend(t *testing.T) {
 	cases := []struct {
-		args    []string
-		member  string
-		wantErr bool
+		args       []string
+		member, as string
+		wantErr    bool
 	}{
-		{nil, "", false},
-		{[]string{"--member", "alice"}, "alice", false},
-		{[]string{"-member=alice"}, "alice", false},
-		{[]string{"--member"}, "", true},
-		{[]string{"--member", ""}, "", true},
-		{[]string{"--member", " alice"}, "", true},
-		{[]string{"extra"}, "", true},
-		{[]string{"--everyone"}, "", true},
+		{nil, "", "", false},
+		{[]string{"--member", "alice"}, "alice", "", false},
+		{[]string{"-member=alice"}, "alice", "", false},
+		{[]string{"--member"}, "", "", true},
+		{[]string{"--member", ""}, "", "", true},
+		{[]string{"--member", " alice"}, "", "", true},
+		{[]string{"extra"}, "", "", true},
+		{[]string{"--everyone"}, "", "", true},
+		{[]string{"--member", "alice", "--as", "bob"}, "alice", "bob", false},
+		{[]string{"--as=bob", "--member=alice"}, "alice", "bob", false},
+		{[]string{"--as", "bob"}, "", "", true},
+		{[]string{"--member", "alice", "--as"}, "", "", true},
+		{[]string{"--member", "alice", "--as", ""}, "", "", true},
+		{[]string{"--member", "alice", "--as", "bob "}, "", "", true},
 	}
 	for _, c := range cases {
 		got, err := parseSend(c.args)
@@ -28,8 +34,8 @@ func TestParseSend(t *testing.T) {
 			t.Errorf("parseSend(%q): error %v, want error %v", c.args, err, c.wantErr)
 			continue
 		}
-		if err == nil && got.member != c.member {
-			t.Errorf("parseSend(%q): member %q, want %q", c.args, got.member, c.member)
+		if err == nil && (got.member != c.member || got.as != c.as) {
+			t.Errorf("parseSend(%q): member %q as %q, want %q as %q", c.args, got.member, got.as, c.member, c.as)
 		}
 	}
 }

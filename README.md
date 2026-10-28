@@ -18,6 +18,7 @@ The only page is `/u/{token}`; the gateway also forwards `GET /healthz`, a probe
 
 ```sh
 docker compose exec app /paisans-engagement-service send --member <username>
+docker compose exec app /paisans-engagement-service send --member <username> --as <username>
 docker compose exec app /paisans-engagement-service send
 ```
 
@@ -25,6 +26,7 @@ The image has no shell, so `exec` names the binary. `docker compose run --rm app
 
 * **Never twice.** `send` claims each member for the week exactly as the schedule does, so a member the schedule or an earlier `send` already reached that week is skipped. The next Monday is a new week and sends as usual.
 * **One member.** `--member` takes an Mbin username and sends to that member alone. Nobody else is claimed, so a later `send` without it still reaches the rest of the community for the same week. A username that gets no digest is refused and nothing is sent.
+* **A preview.** `--as` takes a second Mbin username and needs `--member`: `send --member alice --as bob` mails alice the digest bob would get this week, so a tester who has already joined everything still sees a full one. The subject starts `[Preview as bob]`, and the unsubscribe link is alice's own. A preview claims nobody and records nothing as shown, so the schedule or a later `send` still reaches both members with the same digest. It is refused, and nothing is sent, when bob would get no digest, because he unsubscribed or has nothing left to read, or when alice unsubscribed.
 * **The schedule does not catch up.** The schedule sends only on the Monday itself, so after a test with `--member` on a later day the rest of that week goes out only if `send` is run again without it.
 * **Exit status.** `send` logs the same summary line as a scheduled run and exits 0, or logs the error and exits 1. Without `ENGAGEMENT_SMTP_HOST` it refuses before reading anything. A member whose digest the relay never accepted is left unclaimed and the exit is 1, so running `send` again reaches them.
 

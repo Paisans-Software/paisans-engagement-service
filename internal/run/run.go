@@ -155,19 +155,10 @@ func (r *Runner) one(ctx context.Context, m digest.Member, from, to time.Time, i
 	if unsub {
 		return store.StatusUnsubscribed, nil, nil
 	}
-	v, err := r.Source.View(ctx, m, from, to, items)
+	d, ok, err := r.build(ctx, m, from, to, items, stats)
 	if err != nil {
-		return "", nil, fmt.Errorf("read the member's view: %w", err)
+		return "", nil, err
 	}
-	shown, err := r.Store.Shown(ctx, m.Subject)
-	if err != nil {
-		return "", nil, fmt.Errorf("read what the member was shown: %w", err)
-	}
-	v.Shown = map[digest.Key]bool{}
-	for it := range shown {
-		v.Shown[digest.Key{Kind: digest.Kind(it.Kind), ID: it.ID}] = true
-	}
-	d, ok := digest.Build(items, v, stats)
 	if !ok {
 		return store.StatusEmpty, nil, nil
 	}
@@ -185,6 +176,90 @@ func (r *Runner) one(ctx context.Context, m digest.Member, from, to time.Time, i
 		return store.StatusFailed, nil, err
 	}
 	return store.StatusSent, sent(d), nil
+}
+
+// build is the member's digest for the week, and false when it has nothing
+// in it. It only reads.
+func (r *Runner) build(ctx context.Context, m digest.Member, from, to time.Time, items []digest.Item, stats digest.Stats) (digest.Digest, bool, error) {
+	v, err := r.Source.View(ctx, m, from, to, items)
+	if err != nil {
+		return digest.Digest{}, false, fmt.Errorf("read the member's view: %w", err)
+	}
+	shown, err := r.Store.Shown(ctx, m.Subject)
+	if err != nil {
+		return digest.Digest{}, false, fmt.Errorf("read what the member was shown: %w", err)
+	}
+	v.Shown = map[digest.Key]bool{}
+	for it := range shown {
+		v.Shown[digest.Key{Kind: digest.Kind(it.Kind), ID: it.ID}] = true
+	}
+	d, ok := digest.Build(items, v, stats)
+	return d, ok, nil
+}
+
+// Preview mails the member with username to the digest that the member with
+// username as would get for the week, so a tester who has joined everything
+// still sees a full one. The subject is marked as a preview, and the
+// unsubscribe link is the recipient's own, never the other member's.
+//
+// Nobody is claimed and nothing is recorded as shown, so the week's real run
+// still reaches both members with the same digest. A member who would get no
+// digest, because they unsubscribed or have nothing left, is refused, and so
+// is a recipient who unsubscribed.
+func (r *Runner) Preview(ctx context.Context, week time.Time, to, as string) error {
+	from := week.AddDate(0, 0, -7)
+	members, err := r.Source.Members(ctx)
+	if err != nil {
+		return fmt.Errorf("read members: %w", err)
+	}
+	// No usernames in the messages: the operator typed them, and the
+	// errors reach the log.
+	recipient, viewer := only(members, to), only(members, as)
+	if len(recipient) == 0 {
+		return errors.New("no member with the --member username gets the digest")
+	}
+	if len(viewer) == 0 {
+		return errors.New("no member with the --as username gets the digest")
+	}
+	rm, vm := recipient[0], viewer[0]
+	for _, c := range []struct {
+		m    digest.Member
+		flag string
+	}{{rm, "--member"}, {vm, "--as"}} {
+		unsub, err := r.Store.Unsubscribed(ctx, c.m.Subject)
+		if err != nil {
+			return fmt.Errorf("read unsubscribes: %w", err)
+		}
+		if unsub {
+			return fmt.Errorf("the %s member unsubscribed, so nothing is sent", c.flag)
+		}
+	}
+	items, err := r.Source.Hot(ctx, from, week)
+	if err != nil {
+		return fmt.Errorf("read the week's threads: %w", err)
+	}
+	stats, err := r.Source.Stats(ctx, from, week)
+	if err != nil {
+		return fmt.Errorf("read the week's figures: %w", err)
+	}
+	d, ok, err := r.build(ctx, vm, from, week, items, stats)
+	if err != nil {
+		return err
+	}
+	if !ok {
+		return errors.New("the --as member has nothing to read this week, so there is no digest to preview")
+	}
+	msg, err := mail.Render(d, r.Names, r.SiteURL, r.PublicURL+"/u/"+token.Sign(r.Key, rm.Subject), from, week)
+	if err != nil {
+		return fmt.Errorf("render: %w", err)
+	}
+	msg.Subject = "[Preview as " + vm.Username + "] " + msg.Subject
+	msg.To = rm.Email
+	if err := r.Sender.Send(ctx, msg); err != nil {
+		return err
+	}
+	slog.Info("digest preview sent", "week", week.Format("2006-01-02"), "member", rm.ID, "as", vm.ID)
+	return nil
 }
 
 // sent is every thread the digest shows.

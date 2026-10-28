@@ -699,3 +699,84 @@ func TestNextWeekSendsAgain(t *testing.T) {
 		t.Fatalf("sent %d", len(rec.Messages))
 	}
 }
+
+// A preview mails one member the digest another would get, with the
+// recipient's own unsubscribe link, and claims and records nobody, so the
+// week's real run still reaches both and shows them the thread.
+func TestPreviewSendsAnotherMembersDigest(t *testing.T) {
+	s := storetest.New(t)
+	src := newSource()
+	// The recipient has joined everything, so only the other member's
+	// digest has anything in it.
+	src.joined["sub-1"] = true
+	rec := &mailtest.Recorder{}
+	r := runner(s, src, rec)
+	if err := r.Preview(context.Background(), week, "one", "two"); err != nil {
+		t.Fatal(err)
+	}
+	if len(rec.Messages) != 1 || rec.Messages[0].To != "one@example.org" {
+		t.Fatalf("preview messages: %v", countTo(rec.Messages))
+	}
+	m := rec.Messages[0]
+	if m.Subject != "[Preview as two] Your week on Talk · Example Community" {
+		t.Fatalf("subject %q", m.Subject)
+	}
+	if !strings.Contains(m.Text, "grinders") {
+		t.Fatal("the other member's thread is not in the preview")
+	}
+	tok, ok := strings.CutPrefix(m.Unsubscribe, "https://digest.example.org/u/")
+	if !ok {
+		t.Fatalf("unsubscribe URL %q", m.Unsubscribe)
+	}
+	if sub, ok := token.Verify(key, tok); !ok || sub != "sub-1" {
+		t.Fatalf("preview unsubscribe token names %q (ok %v), want the recipient", sub, ok)
+	}
+	if got := statuses(t, s); len(got) != 0 {
+		t.Fatalf("preview claimed %v", got)
+	}
+	shown, err := s.Shown(context.Background(), "sub-2")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(shown) != 0 {
+		t.Fatalf("preview recorded %v as shown", shown)
+	}
+
+	rec.Messages = nil
+	if err := r.Week(context.Background(), week); err != nil {
+		t.Fatal(err)
+	}
+	if n := countTo(rec.Messages); n["two@example.org"] != 1 || n["three@example.org"] != 1 {
+		t.Fatalf("after the preview, messages by recipient: %v", n)
+	}
+}
+
+// A preview of a member who would get no digest, or of a username nobody
+// has, sends nothing and fails, so it is not mistaken for a sent preview.
+func TestPreviewRefusesWithoutADigest(t *testing.T) {
+	s := storetest.New(t)
+	if err := s.Unsubscribe(context.Background(), "sub-3"); err != nil {
+		t.Fatal(err)
+	}
+	src := newSource()
+	src.joined["sub-2"] = true
+	cases := []struct{ to, as string }{
+		{"one", "two"},    // nothing left for two
+		{"one", "three"},  // three unsubscribed
+		{"three", "one"},  // the recipient unsubscribed
+		{"one", "nobody"}, // no such member
+		{"nobody", "one"},
+	}
+	for _, c := range cases {
+		rec := &mailtest.Recorder{}
+		if err := runner(s, src, rec).Preview(context.Background(), week, c.to, c.as); err == nil {
+			t.Errorf("preview to %s as %s: no error", c.to, c.as)
+		}
+		if len(rec.Messages) != 0 {
+			t.Errorf("preview to %s as %s: %d messages", c.to, c.as, len(rec.Messages))
+		}
+	}
+	if got := statuses(t, s); len(got) != 0 {
+		t.Fatalf("previews claimed %v", got)
+	}
+}
