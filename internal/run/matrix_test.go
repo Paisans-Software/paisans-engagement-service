@@ -780,3 +780,91 @@ func TestDayEndCutsWait(t *testing.T) {
 		t.Fatalf("%d dm_sends rows", n)
 	}
 }
+
+// A Matrix send left pending by a sender that stopped before finishing is not
+// done: Loop skips the member while the claim is fresh, then, once it is
+// stale and the send day is not over, delivers once.
+func TestLoopRetriesPendingDMAfterStaleWindow(t *testing.T) {
+	s := storetest.New(t)
+	src := newSource()
+	rec, dm := &mailtest.Recorder{}, newDM()
+	r := matrixRunner(s, src, rec, dm)
+	c := newClock(onSendDay())
+	r.Now = c.now
+	conn := storetest.Conn(t, s)
+	if _, err := conn.Exec(context.Background(),
+		`INSERT INTO dm_sends (subject, week, status) VALUES ('sub-2', '2026-10-26', 'pending')`); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	defer func() { cancel(); <-done }()
+	go func() {
+		run.Loop(ctx, r, c.now, time.Millisecond)
+		close(done)
+	}()
+	deadline := time.Now().Add(5 * time.Second)
+	for len(dm.deliveries()) < 2 {
+		if time.Now().After(deadline) {
+			t.Fatalf("deliveries: %v", dm.subjects())
+		}
+		time.Sleep(time.Millisecond)
+	}
+	c.waitTicks(t, 5)
+	for _, d := range dm.deliveries() {
+		if d.Subject == "sub-2" {
+			t.Fatal("a fresh pending claim was sent over")
+		}
+	}
+	// The stopped sender's claim ages past the stale window.
+	if _, err := conn.Exec(context.Background(),
+		`UPDATE dm_sends SET at = now() - interval '20 minutes' WHERE subject = 'sub-2'`); err != nil {
+		t.Fatal(err)
+	}
+	c.set(onSendDay().Add(16 * time.Minute))
+	for len(dm.deliveries()) < 3 {
+		if time.Now().After(deadline) {
+			t.Fatalf("deliveries: %v", dm.subjects())
+		}
+		time.Sleep(time.Millisecond)
+	}
+	c.waitTicks(t, 5)
+	if n := len(dm.deliveries()); n != 3 {
+		t.Fatalf("%d deliveries", n)
+	}
+	if st := dmStatuses(t, s, "2026-10-26")["sub-2"]; st != string(store.StatusSent) {
+		t.Fatalf("sub-2: %q", st)
+	}
+	if h := src.hots.Load(); h != 1 {
+		t.Fatalf("Mbin read %d times", h)
+	}
+}
+
+// A finished Matrix send, sent or failed, is done and is not tried again.
+func TestLoopFinishedDMIsNotRetried(t *testing.T) {
+	s := storetest.New(t)
+	dm := newDM()
+	dm.outcome["sub-1"] = bot.Refused
+	r := matrixRunner(s, newSource(), &mailtest.Recorder{}, dm)
+	c := newClock(onSendDay())
+	r.Now = c.now
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	defer func() { cancel(); <-done }()
+	go func() {
+		run.Loop(ctx, r, c.now, time.Millisecond)
+		close(done)
+	}()
+	deadline := time.Now().Add(5 * time.Second)
+	for len(dm.deliveries()) < 3 {
+		if time.Now().After(deadline) {
+			t.Fatalf("deliveries: %v", dm.subjects())
+		}
+		time.Sleep(time.Millisecond)
+	}
+	c.set(onSendDay().Add(time.Hour))
+	c.waitTicks(t, 10)
+	if n := len(dm.deliveries()); n != 3 {
+		t.Fatalf("%d deliveries", n)
+	}
+}

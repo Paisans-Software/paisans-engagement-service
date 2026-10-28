@@ -5,14 +5,14 @@ import (
 	"time"
 )
 
-// staleDM is how old a pending Matrix send must be before ClaimDM takes it
+// StaleDM is how old a pending Matrix send must be before ClaimDM takes it
 // over.
-const staleDM = 15 * time.Minute
+const StaleDM = 15 * time.Minute
 
 // ClaimDM reserves the member's Matrix send for a week and reports whether
 // this caller won it. It is independent of the email claim for the same week.
 //
-// A claim still pending after staleDM belongs to a sender that stopped
+// A claim still pending after StaleDM belongs to a sender that stopped
 // between claiming and finishing, and is won again with its time reset. Only
 // the copy holding the bot lock sends, and a resend uses the same
 // transaction id, so the homeserver delivers a notice that did go out only
@@ -22,11 +22,22 @@ func (s *Store) ClaimDM(ctx context.Context, subject string, week time.Time) (bo
 		`INSERT INTO dm_sends (subject, week, status) VALUES ($1, $2::date, 'pending')
 		ON CONFLICT (subject, week) DO UPDATE SET at = now()
 		WHERE dm_sends.status = 'pending' AND dm_sends.at < now() - $3::interval`,
-		subject, weekDate(week), staleDM)
+		subject, weekDate(week), StaleDM)
 	if err != nil {
 		return false, err
 	}
 	return tag.RowsAffected() == 1, nil
+}
+
+// DMPending reports whether the member's Matrix send for the week is claimed
+// and not yet finished, so a caller whose ClaimDM lost can tell a send still
+// in progress, or left by a sender that stopped, from one that is done.
+func (s *Store) DMPending(ctx context.Context, subject string, week time.Time) (bool, error) {
+	var pending bool
+	err := s.pool.QueryRow(ctx,
+		`SELECT EXISTS (SELECT 1 FROM dm_sends WHERE subject=$1 AND week=$2::date AND status='pending')`,
+		subject, weekDate(week)).Scan(&pending)
+	return pending, err
 }
 
 // FinishDM records how a claimed Matrix send ended (StatusSent or

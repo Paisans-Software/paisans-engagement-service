@@ -137,3 +137,31 @@ func TestClaimDMReclaimsStalePending(t *testing.T) {
 		t.Fatalf("a fresh reclaim was claimed again: %v %v", ok, err)
 	}
 }
+
+func TestDMPending(t *testing.T) {
+	s := storetest.New(t)
+	ctx := context.Background()
+	pending := func() bool {
+		t.Helper()
+		p, err := s.DMPending(ctx, "sub-1", monday)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return p
+	}
+	if pending() {
+		t.Fatal("pending before any claim")
+	}
+	if _, err := s.ClaimDM(ctx, "sub-1", monday); err != nil {
+		t.Fatal(err)
+	}
+	if !pending() {
+		t.Fatal("a claim is not pending")
+	}
+	if err := s.FinishDM(ctx, "sub-1", monday, store.StatusFailed); err != nil {
+		t.Fatal(err)
+	}
+	if pending() {
+		t.Fatal("a finished send is pending")
+	}
+}
