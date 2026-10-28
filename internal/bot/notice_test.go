@@ -20,30 +20,41 @@ func TestWeeklyBody(t *testing.T) {
 			item(digest.KindEntry, "Beans", "https://t/3"),
 			item(digest.KindEntry, "Kettles", "https://t/4"),
 			item(digest.KindEntry, "Filters", "https://t/5"),
+			item(digest.KindEntry, "Scales", "https://t/6"),
 		},
 	}
 	n := Weekly(d, "Talk · Example", "https://web/d/tok")
-	want := "Your weekly digest from Talk · Example\n\n• Grinders\n• Beans\n• Kettles\n\n" +
+	want := "Your weekly digest from Talk · Example\n\n• Grinders\n• \"A post\"\n• Beans\n• Kettles\n• Filters\n\n" +
 		"Read the whole digest: https://web/d/tok\n\nReply stop to stop these messages."
 	if n.Body != want {
 		t.Fatalf("body = %q", n.Body)
 	}
 	if !strings.Contains(n.FormattedBody, `<li><a href="https://t/3">Beans</a></li>`) ||
+		!strings.Contains(n.FormattedBody, `<li><a href="https://t/2">&ldquo;A post&rdquo;</a></li>`) ||
 		!strings.Contains(n.FormattedBody, `<p>Read the whole digest: <a href="https://web/d/tok">https://web/d/tok</a></p>`) ||
-		strings.Contains(n.FormattedBody, "Filters") {
+		strings.Contains(n.FormattedBody, "Scales") {
 		t.Fatalf("formatted = %q", n.FormattedBody)
 	}
 }
 
+// A microblog post has no title, so the notice quotes it, as the email does.
 func TestWeeklyOnlyPosts(t *testing.T) {
 	d := digest.Digest{More: []digest.Item{item(digest.KindPost, "P", "u")}}
 	n := Weekly(d, "Talk · Example", "L")
-	want := "Your weekly digest from Talk · Example\n\nRead the whole digest: L\n\nReply stop to stop these messages."
+	want := "Your weekly digest from Talk · Example\n\n• \"P\"\n\nRead the whole digest: L\n\nReply stop to stop these messages."
 	if n.Body != want {
 		t.Fatalf("body = %q", n.Body)
 	}
-	if strings.Contains(n.FormattedBody, "<ul>") {
+	if !strings.Contains(n.FormattedBody, `<li><a href="u">&ldquo;P&rdquo;</a></li>`) {
 		t.Fatalf("formatted = %q", n.FormattedBody)
+	}
+}
+
+func TestWeeklyEmpty(t *testing.T) {
+	n := Weekly(digest.Digest{}, "Talk · Example", "L")
+	want := "Your weekly digest from Talk · Example\n\nRead the whole digest: L\n\nReply stop to stop these messages."
+	if n.Body != want || strings.Contains(n.FormattedBody, "<ul>") {
+		t.Fatalf("notice = %q / %q", n.Body, n.FormattedBody)
 	}
 }
 
