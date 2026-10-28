@@ -41,11 +41,11 @@ func render(t *testing.T, d digest.Digest) Message {
 
 func TestRenderNames(t *testing.T) {
 	m := render(t, sample())
-	if m.Subject != "Your week on Talk · Example Community" {
+	if m.Subject != "This week on Talk · Example Community" {
 		t.Fatalf("subject %q", m.Subject)
 	}
 	for _, body := range []string{m.HTML, m.Text} {
-		if strings.Count(body, "Your week on Talk · Example Community") < 1 ||
+		if strings.Count(body, "This week on Talk · Example Community") < 1 ||
 			!strings.Contains(body, "member of Talk · Example Community.") {
 			t.Fatalf("meta missing in %s", body)
 		}
@@ -109,8 +109,8 @@ func TestRenderNoFeatured(t *testing.T) {
 	d := sample()
 	d.Featured = nil
 	m := render(t, d)
-	if strings.Contains(m.HTML+m.Text, "the big one") {
-		t.Fatal("featured label rendered")
+	if strings.Contains(m.HTML+m.Text, "grinders") {
+		t.Fatal("featured thread rendered")
 	}
 	if !strings.Contains(m.Text, "garden") || !strings.Contains(m.HTML, "148") {
 		t.Fatal("list or stats missing")
@@ -146,44 +146,98 @@ func TestRenderTextPartHasEveryLink(t *testing.T) {
 	}
 }
 
-func TestRenderFigure(t *testing.T) {
+// A microblog post has no title, so the email quotes its text and links
+// the magazine line to it, featured, listed or unanswered.
+func TestRenderPostQuoted(t *testing.T) {
 	d := sample()
-	d.More[0].Comments = 0
-	d.More[0].Score = 31
-	d.More[1].Comments = 1
+	d.Featured.Item.Key.Kind = digest.KindPost
+	d.More[0].Key.Kind = digest.KindPost
+	d.Unanswered = []digest.Item{item(4, "kettles")}
+	d.Unanswered[0].Key.Kind = digest.KindPost
+	d.UnansweredHeading = "New posts"
 	m := render(t, d)
-	for _, w := range []string{"31 votes", "1 comment", "4 comments", "3 people joined in"} {
-		if !strings.Contains(m.Text, w) {
-			t.Fatalf("missing %q:\n%s", w, m.Text)
+	if strings.Contains(m.Text, "microblog") || strings.Contains(m.HTML, "microblog") {
+		t.Fatalf("post labelled:\n%s", m.Text)
+	}
+	for _, it := range []digest.Item{d.Featured.Item, d.More[0], d.Unanswered[0]} {
+		if !strings.Contains(m.Text, "\n\""+it.Title+"\"\n!coffee\n"+it.URL+"\n") {
+			t.Fatalf("text: %s not quoted:\n%s", it.Title, m.Text)
+		}
+		if !strings.Contains(m.HTML, "&ldquo;"+it.Title+"&rdquo;") ||
+			!strings.Contains(m.HTML, `<a href="`+it.URL+`" style="color:#22aa66;text-decoration:none;font-weight:600;">!coffee</a>`) {
+			t.Fatalf("html: %s not quoted:\n%s", it.Title, m.HTML)
 		}
 	}
-	if strings.Contains(m.Text, "1 comments") {
-		t.Fatal("bad plural")
+	// The featured post still quotes its best comment after its own text.
+	if !strings.Contains(m.Text, d.Featured.Item.URL+"\n\"hand grinders win\"\n") {
+		t.Fatalf("featured comment excerpt:\n%s", m.Text)
 	}
 }
 
-func TestRenderPostLabelled(t *testing.T) {
-	d := sample()
-	d.More[0].Key.Kind = digest.KindPost
-	m := render(t, d)
-	if strings.Count(m.Text, "microblog") != 1 || strings.Count(m.HTML, "microblog") != 1 {
-		t.Fatalf("label count wrong:\n%s", m.Text)
-	}
-}
-
-// A thread shown before is counted by this week's comments, in the featured
-// slot and in the list.
-func TestRenderReturningFigure(t *testing.T) {
+// Every item, featured, listed or unanswered, a returning thread too, shows
+// its title and its magazine, and nothing
+// it could be counted by. The featured thread quotes its excerpt after them.
+func TestRenderNoFigures(t *testing.T) {
 	d := sample()
 	d.Featured.Item.Again, d.Featured.Item.NewComments = true, 2
 	d.More[0].Again, d.More[0].NewComments = true, 1
+	d.More[1].Comments = 0
+	d.Unanswered = []digest.Item{item(4, "kettles")}
+	d.UnansweredHeading = "New posts"
 	m := render(t, d)
-	for _, part := range []string{m.Text, m.HTML} {
-		for _, w := range []string{"2 new comments this week · 3 people joined in", "1 new comment this week", "4 comments"} {
-			if !strings.Contains(part, w) {
-				t.Fatalf("missing %q:\n%s", w, part)
+	for name, part := range map[string]string{"text": m.Text, "html": m.HTML} {
+		body := part[strings.Index(part, "new members")+len("new members") : strings.Index(part, "See everything on")]
+		for _, bad := range []string{"comment", "vote", "joined in", "big one", "this week"} {
+			if strings.Contains(body, bad) {
+				t.Fatalf("%s: %q in:\n%s", name, bad, body)
 			}
 		}
+		if strings.Count(body, "!coffee") != 4 {
+			t.Fatalf("%s: magazines:\n%s", name, body)
+		}
+	}
+	if !strings.Contains(m.Text, "new members\n\ngrinders\nhttps://talk.example.org/m/coffee/t/grinders\n!coffee\n\"hand grinders win\"\n\ngarden\n") {
+		t.Fatalf("text layout:\n%s", m.Text)
+	}
+	// In the HTML too, the featured thread's magazine comes after its title.
+	card := m.HTML[strings.Index(m.HTML, "#f4f7fb"):]
+	if strings.Index(card, "!coffee") < strings.Index(card, ">grinders</a>") {
+		t.Fatalf("magazine above the featured title:\n%s", card)
+	}
+}
+
+// The week's unanswered threads have a section of their own, after the list,
+// under the heading the digest picked.
+func TestRenderUnanswered(t *testing.T) {
+	d := sample()
+	d.Unanswered = []digest.Item{item(4, "kettles"), item(5, "beans")}
+	d.Unanswered[1].Key.Kind = digest.KindPost
+	d.UnansweredHeading = "Start the conversation"
+	m := render(t, d)
+	for name, part := range map[string]string{"text": m.Text, "html": m.HTML} {
+		head := strings.Index(part, "Start the conversation")
+		if head < 0 || strings.Count(part, "Start the conversation") != 1 {
+			t.Fatalf("%s: heading missing:\n%s", name, part)
+		}
+		if strings.Index(part, d.More[1].URL) > head || strings.Index(part, "See everything on") < head {
+			t.Fatalf("%s: section out of place:\n%s", name, part)
+		}
+		for _, it := range d.Unanswered {
+			if i := strings.Index(part, it.URL); i < head {
+				t.Fatalf("%s: %s missing from the section:\n%s", name, it.URL, part)
+			}
+		}
+	}
+	if !strings.Contains(m.Text, "\nkettles\nhttps://talk.example.org/m/coffee/t/kettles\n!coffee\n") {
+		t.Fatalf("text layout:\n%s", m.Text)
+	}
+}
+
+func TestRenderNoUnanswered(t *testing.T) {
+	m := render(t, sample())
+	if strings.Contains(m.HTML+m.Text, "New posts") || strings.Contains(m.HTML+m.Text, "No replies") ||
+		strings.Contains(m.HTML+m.Text, "Start the conversation") {
+		t.Fatal("empty section rendered")
 	}
 }
 
@@ -203,7 +257,7 @@ func TestRenderPageHasNoUnsubscribe(t *testing.T) {
 			t.Fatalf("page contains %q: %s", bad, h)
 		}
 	}
-	for _, want := range []string{"grinders", "See everything on Talk", "<title>Your week on Talk · Example Community</title>", `name="viewport"`} {
+	for _, want := range []string{"grinders", "See everything on Talk", "<title>This week on Talk · Example Community</title>", `name="viewport"`} {
 		if !strings.Contains(h, want) {
 			t.Fatalf("page lacks %q: %s", want, h)
 		}

@@ -260,6 +260,7 @@ func TestQueriesStayInsideAllowlist(t *testing.T) {
 	f.magazine(t, 11, row{"name": "remote@remote.example.org", "ap_id": "https://remote.example.org/m/remote"})
 	f.entry(t, 100, 1, 10, nil)
 	f.entry(t, 101, 2, 11, row{"ap_id": "https://remote.example.org/t/1"})
+	f.entry(t, 102, 1, 10, nil)
 	f.post(t, 200, 2, 10, nil)
 	f.entryComment(t, 300, 2, 100, 10, nil)
 	f.postComment(t, 400, 1, 200, 10, nil)
@@ -307,6 +308,13 @@ func TestQueriesStayInsideAllowlist(t *testing.T) {
 	}
 	if len(members) == 0 || len(items) == 0 {
 		t.Fatalf("expected rows, got %d members and %d items", len(members), len(items))
+	}
+	fresh, err := s.Unanswered(ctx, from, to)
+	if err != nil {
+		t.Fatalf("Unanswered: %v", err)
+	}
+	if len(fresh) == 0 {
+		t.Fatal("expected an unanswered item")
 	}
 	if _, err := s.View(ctx, members[0], from, to, items); err != nil {
 		t.Fatalf("View: %v", err)
@@ -807,5 +815,123 @@ func TestTopNewThisWeekOnly(t *testing.T) {
 	}
 	if remote.TopNew != nil || remote.NewComments != 1 {
 		t.Errorf("remote: %+v", remote)
+	}
+}
+
+// Unanswered is the week's new local threads that nobody but their author
+// has commented on, voted on, boosted or favourited.
+func TestUnanswered(t *testing.T) {
+	f := newFixture(t)
+	f.user(t, 1, nil)
+	f.user(t, 2, nil)
+	f.user(t, 3, row{"is_banned": true})
+	f.user(t, 4, row{"ap_id": "https://remote.example.org/u/4"})
+	f.magazine(t, 10, nil)
+	f.magazine(t, 11, row{"is_adult": true})
+	f.magazine(t, 15, row{"name": "far@remote.example.org", "ap_id": "https://remote.example.org/m/far"})
+	f.exec(t, `INSERT INTO magazine_subscription VALUES (1, 15)`)
+
+	// Kept: untouched, answered only by its author, a removed comment, a
+	// vote taken back.
+	f.entry(t, 1, 1, 10, nil)
+	f.entry(t, 2, 1, 10, nil)
+	f.entryComment(t, 1, 1, 2, 10, nil)
+	f.exec(t, `INSERT INTO entry_vote VALUES (1, 2, 1)`)
+	f.exec(t, `INSERT INTO favourite VALUES (1, 2, NULL)`)
+	f.entry(t, 3, 1, 10, nil)
+	f.entryComment(t, 2, 2, 3, 10, row{"visibility": "trashed"})
+	f.entry(t, 4, 1, 10, nil)
+	f.exec(t, `INSERT INTO entry_vote VALUES (2, 4, 0)`)
+	// Answered: a comment, a boost, a down vote, a favourite.
+	f.entry(t, 5, 1, 10, nil)
+	f.entryComment(t, 3, 2, 5, 10, nil)
+	f.entry(t, 6, 1, 10, nil)
+	f.exec(t, `INSERT INTO entry_vote VALUES (2, 6, 1)`)
+	f.entry(t, 7, 1, 10, nil)
+	f.exec(t, `INSERT INTO entry_vote VALUES (2, 7, -1)`)
+	f.entry(t, 8, 1, 10, nil)
+	f.exec(t, `INSERT INTO favourite VALUES (2, 8, NULL)`)
+	// Left out: outside the week, adult, removed, in an adult magazine, by a
+	// banned author, federated.
+	f.entry(t, 9, 1, 10, row{"created_at": old})
+	f.entry(t, 10, 1, 10, row{"created_at": to})
+	f.entry(t, 11, 1, 10, row{"is_adult": true})
+	f.entry(t, 12, 1, 10, row{"visibility": "trashed"})
+	f.entry(t, 13, 1, 11, nil)
+	f.entry(t, 14, 3, 10, nil)
+	f.entry(t, 15, 4, 15, row{"ap_id": "https://remote.example.org/t/15"})
+
+	// The same for posts: kept, kept, then a reply, a boost, a favourite.
+	f.post(t, 1, 1, 10, nil)
+	f.post(t, 2, 1, 10, nil)
+	f.postComment(t, 1, 1, 2, 10, nil)
+	f.post(t, 3, 1, 10, nil)
+	f.postComment(t, 2, 2, 3, 10, nil)
+	f.post(t, 4, 1, 10, nil)
+	f.exec(t, `INSERT INTO post_vote VALUES (2, 4, 1)`)
+	f.post(t, 5, 1, 10, nil)
+	f.exec(t, `INSERT INTO favourite VALUES (2, NULL, 5)`)
+
+	got, err := f.source(t).Unanswered(context.Background(), from, to)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ks := keys(got)
+	slices.SortFunc(ks, func(a, b digest.Key) int {
+		if a.Kind != b.Kind {
+			return strings.Compare(string(a.Kind), string(b.Kind))
+		}
+		return int(a.ID - b.ID)
+	})
+	want := []digest.Key{entryKey(1), entryKey(2), entryKey(3), entryKey(4), postKey(1), postKey(2)}
+	if !slices.Equal(ks, want) {
+		t.Fatalf("got %v, want %v", ks, want)
+	}
+}
+
+func TestUnansweredItem(t *testing.T) {
+	f := newFixture(t)
+	f.user(t, 1, nil)
+	f.magazine(t, 10, row{"name": "cooking", "title": "Two\nLines"})
+	f.entry(t, 7, 1, 10, row{"slug": "a-good-loaf", "title": "A good\nloaf"})
+	f.post(t, 8, 1, 10, row{"slug": nil, "body": "**Bread** is [here](https://example.org) now", "created_at": mid.Add(time.Hour)})
+
+	got, err := f.source(t).Unanswered(context.Background(), from, to)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []struct {
+		key        digest.Key
+		title, url string
+	}{
+		{postKey(8), "Bread is here now", site + "/m/cooking/p/8/-"},
+		{entryKey(7), "A good loaf", site + "/m/cooking/t/7/a-good-loaf"},
+	}
+	if len(got) != len(want) {
+		t.Fatalf("got %+v", got)
+	}
+	mag := digest.Magazine{ID: 10, Name: "cooking", Title: "Two Lines"}
+	for i, w := range want {
+		g := got[i]
+		if g.Key != w.key || g.Title != w.title || g.URL != w.url || g.Magazine != mag || g.AuthorID != 1 || g.Federated {
+			t.Errorf("item %d: got %+v, want %+v", i, g, w)
+		}
+	}
+}
+
+// The newest 200 are the candidates.
+func TestUnansweredCap(t *testing.T) {
+	f := newFixture(t)
+	f.user(t, 1, nil)
+	f.magazine(t, 10, nil)
+	f.exec(t, `INSERT INTO entry (id, user_id, magazine_id, title, created_at, last_active)
+		SELECT g, 1, 10, 'Entry ' || g, $1::timestamptz + g * interval '1 minute', $1 FROM generate_series(1, 201) g`, mid)
+
+	got, err := f.source(t).Unanswered(context.Background(), from, to)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 200 || got[0].Key != entryKey(201) || got[199].Key != entryKey(2) {
+		t.Fatalf("got %d items, first %v", len(got), got[0].Key)
 	}
 }

@@ -6,6 +6,8 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"math/rand/v2"
+	"slices"
 	"time"
 
 	"github.com/paisans-software/paisans-engagement-service/internal/bot"
@@ -19,6 +21,7 @@ import (
 type Source interface {
 	Members(ctx context.Context) ([]digest.Member, error)
 	Hot(ctx context.Context, from, to time.Time) ([]digest.Item, error)
+	Unanswered(ctx context.Context, from, to time.Time) ([]digest.Item, error)
 	View(ctx context.Context, m digest.Member, from, to time.Time, items []digest.Item) (digest.View, error)
 	Stats(ctx context.Context, from, to time.Time) (digest.Stats, error)
 }
@@ -56,6 +59,9 @@ type Runner struct {
 	// so a test send mails one person. Nobody else is claimed, so a later
 	// full run for the same week still reaches them.
 	Only string
+	// Rand picks the unanswered threads each digest offers; nil is the
+	// random package's own source.
+	Rand *rand.Rand
 }
 
 func (r *Runner) now() time.Time {
@@ -133,11 +139,15 @@ func (r *Runner) week(ctx context.Context, week time.Time) (*matrixHalf, error) 
 	if err != nil {
 		return nil, fmt.Errorf("read the week's threads: %w", err)
 	}
+	fresh, err := r.Source.Unanswered(ctx, from, week)
+	if err != nil {
+		return nil, fmt.Errorf("read the week's unanswered threads: %w", err)
+	}
 	stats, err := r.Source.Stats(ctx, from, week)
 	if err != nil {
 		return nil, fmt.Errorf("read the week's figures: %w", err)
 	}
-	matrixOn, emailErr := r.emailPass(ctx, members, from, week, items, stats)
+	matrixOn, emailErr := r.emailPass(ctx, members, from, week, items, fresh, stats)
 	later, matrixErr := r.matrixPass(ctx, members, week, matrixOn)
 	return later, errors.Join(emailErr, matrixErr)
 }
@@ -163,7 +173,7 @@ func (r *Runner) noBot() error {
 // emailPass mails every member who has a verified address and builds the
 // digest of every member who gets one by either channel. It returns the
 // subjects whose Matrix notice is on.
-func (r *Runner) emailPass(ctx context.Context, members []digest.Member, from, week time.Time, items []digest.Item, stats digest.Stats) (map[string]bool, error) {
+func (r *Runner) emailPass(ctx context.Context, members []digest.Member, from, week time.Time, items, fresh []digest.Item, stats digest.Stats) (map[string]bool, error) {
 	matrixOn := map[string]bool{}
 	var n struct{ sent, empty, unsubscribed, failed, unclaimed, skipped int }
 	var firstErr error
@@ -216,7 +226,7 @@ func (r *Runner) emailPass(ctx context.Context, members []digest.Member, from, w
 		if !claimed && !on {
 			continue
 		}
-		status, shown, err := r.one(ctx, m, claimed, on, from, week, items, stats)
+		status, shown, err := r.one(ctx, m, claimed, on, from, week, items, fresh, stats)
 		if !claimed {
 			if err != nil {
 				fail(err)
@@ -278,7 +288,7 @@ func only(members []digest.Member, username string) []digest.Member {
 // the claim is to be released. The error explains a failure; it carries no
 // address, since the sender's errors are already reduced to a reason and a
 // code.
-func (r *Runner) one(ctx context.Context, m digest.Member, claimed, matrixOn bool, from, to time.Time, items []digest.Item, stats digest.Stats) (store.Status, []store.Item, error) {
+func (r *Runner) one(ctx context.Context, m digest.Member, claimed, matrixOn bool, from, to time.Time, items, fresh []digest.Item, stats digest.Stats) (store.Status, []store.Item, error) {
 	unsub := false
 	if claimed {
 		var err error
@@ -289,7 +299,7 @@ func (r *Runner) one(ctx context.Context, m digest.Member, claimed, matrixOn boo
 			return store.StatusUnsubscribed, nil, nil
 		}
 	}
-	d, ok, err := r.digestFor(ctx, m, from, to, items, stats)
+	d, ok, err := r.digestFor(ctx, m, from, to, items, fresh, stats)
 	if err != nil || !claimed {
 		return "", nil, err
 	}
@@ -320,14 +330,16 @@ func (r *Runner) one(ctx context.Context, m digest.Member, claimed, matrixOn boo
 // service uses the digest stored first. An empty digest is reported as false
 // and not stored. Shown is read for weeks before this one only, so what this
 // week's sends record does not change the digest.
-func (r *Runner) digestFor(ctx context.Context, m digest.Member, from, week time.Time, items []digest.Item, stats digest.Stats) (digest.Digest, bool, error) {
+func (r *Runner) digestFor(ctx context.Context, m digest.Member, from, week time.Time, items, fresh []digest.Item, stats digest.Stats) (digest.Digest, bool, error) {
 	var d digest.Digest
 	raw, found, err := r.Store.SavedDigest(ctx, m.Subject, week)
 	if err != nil {
 		return d, false, fmt.Errorf("read the stored digest: %w", err)
 	}
 	if !found {
-		v, err := r.Source.View(ctx, m, from, week, items)
+		// The unanswered threads are asked about too, so the member's own
+		// are among the joined.
+		v, err := r.Source.View(ctx, m, from, week, slices.Concat(items, fresh))
 		if err != nil {
 			return d, false, fmt.Errorf("read the member's view: %w", err)
 		}
@@ -343,6 +355,7 @@ func (r *Runner) digestFor(ctx context.Context, m digest.Member, from, week time
 		if !ok {
 			return d, false, nil
 		}
+		built.AddUnanswered(fresh, v, r.Rand)
 		content, err := json.Marshal(built)
 		if err != nil {
 			return d, false, fmt.Errorf("encode the digest: %w", err)
@@ -556,13 +569,76 @@ func (r *Runner) matrixPass(ctx context.Context, members []digest.Member, week t
 	return nil, firstErr
 }
 
+// Preview mails the member with that username the digest a brand-new member
+// would get for the week: nothing joined, blocked or followed, and nothing
+// shown before. A tester who has joined everything still sees a full digest,
+// and no member's own activity is read. The subject is marked as a preview,
+// and the unsubscribe link is the recipient's own.
+//
+// Nobody is claimed, nothing is recorded as shown and no digest is stored, so
+// the week's real run still reaches the member and builds their own. It is
+// email only. A recipient who unsubscribed or has no verified address is
+// refused, and so is a week with nothing for even a blank member.
+func (r *Runner) Preview(ctx context.Context, week time.Time, username string) error {
+	from := week.AddDate(0, 0, -7)
+	members, err := r.Source.Members(ctx)
+	if err != nil {
+		return fmt.Errorf("read members: %w", err)
+	}
+	members = only(members, username)
+	if len(members) == 0 {
+		// No username in the message: the operator typed it, and the
+		// error reaches the log.
+		return errors.New("no member with that username gets the digest")
+	}
+	m := members[0]
+	if m.Email == "" {
+		return errors.New("the member has no verified email address, so no preview is sent")
+	}
+	unsub, err := r.Store.Unsubscribed(ctx, m.Subject)
+	if err != nil {
+		return fmt.Errorf("read unsubscribes: %w", err)
+	}
+	if unsub {
+		return errors.New("the member unsubscribed, so no preview is sent")
+	}
+	items, err := r.Source.Hot(ctx, from, week)
+	if err != nil {
+		return fmt.Errorf("read the week's threads: %w", err)
+	}
+	fresh, err := r.Source.Unanswered(ctx, from, week)
+	if err != nil {
+		return fmt.Errorf("read the week's unanswered threads: %w", err)
+	}
+	stats, err := r.Source.Stats(ctx, from, week)
+	if err != nil {
+		return fmt.Errorf("read the week's figures: %w", err)
+	}
+	d, ok := digest.Build(items, digest.View{}, stats)
+	if !ok {
+		return errors.New("the week has nothing for even a new member, so there is no digest to preview")
+	}
+	d.AddUnanswered(fresh, digest.View{}, r.Rand)
+	msg, err := mail.Render(d, r.Names, r.SiteURL, r.PublicURL+"/u/"+token.Sign(r.Key, m.Subject), from, week)
+	if err != nil {
+		return fmt.Errorf("render: %w", err)
+	}
+	msg.Subject = "[Preview] " + msg.Subject
+	msg.To = m.Email
+	if err := r.Sender.Send(ctx, msg); err != nil {
+		return err
+	}
+	slog.Info("digest preview sent", "week", week.Format("2006-01-02"), "member", m.ID)
+	return nil
+}
+
 // sent is every thread the digest shows.
 func sent(d digest.Digest) []store.Item {
 	var out []store.Item
 	if d.Featured != nil {
 		out = append(out, store.Item{Kind: string(d.Featured.Item.Key.Kind), ID: d.Featured.Item.Key.ID})
 	}
-	for _, it := range d.More {
+	for _, it := range slices.Concat(d.More, d.Unanswered) {
 		out = append(out, store.Item{Kind: string(it.Key.Kind), ID: it.Key.ID})
 	}
 	return out

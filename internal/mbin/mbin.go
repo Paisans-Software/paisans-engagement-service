@@ -16,8 +16,9 @@ import (
 	"github.com/paisans-software/paisans-engagement-service/internal/digest"
 )
 
-// titleRunes is how much of a microblog post stands in for its title.
-const titleRunes = 120
+// titleRunes is how much of a microblog post stands in for its title, which
+// the email quotes.
+const titleRunes = 200
 
 type Source struct {
 	pool    *pgxpool.Pool
@@ -96,17 +97,7 @@ func (s *Source) Hot(ctx context.Context, from, to time.Time) ([]digest.Item, er
 		if err != nil {
 			return it, err
 		}
-		it.Key.Kind = digest.Kind(kind)
-		if text != nil {
-			it.Title = *text
-		}
-		if it.Key.Kind == digest.KindPost {
-			it.Title = digest.Plain(it.Title, titleRunes)
-		} else {
-			it.Title = oneLine(it.Title)
-		}
-		it.Magazine.Title = oneLine(it.Magazine.Title)
-		it.URL = s.url(it, slug)
+		s.dress(&it, kind, slug, text)
 		if it.TopComments, err = topComments(comments); err != nil {
 			return it, err
 		}
@@ -119,6 +110,50 @@ func (s *Source) Hot(ctx context.Context, from, to time.Time) ([]digest.Item, er
 		return nil, fmt.Errorf("hot: %w", err)
 	}
 	return items, nil
+}
+
+// Unanswered is the week's new local threads that nobody but their author
+// has answered, newest first. Per member rules are the digest package's, as
+// for Hot.
+func (s *Source) Unanswered(ctx context.Context, from, to time.Time) ([]digest.Item, error) {
+	rows, err := s.pool.Query(ctx, unansweredSQL, from, to)
+	if err != nil {
+		return nil, fmt.Errorf("unanswered: %w", err)
+	}
+	items, err := pgx.CollectRows(rows, func(r pgx.CollectableRow) (digest.Item, error) {
+		var (
+			it         digest.Item
+			kind       string
+			slug, text *string
+		)
+		err := r.Scan(&kind, &it.Key.ID, &it.AuthorID, &slug, &text,
+			&it.Magazine.ID, &it.Magazine.Name, &it.Magazine.Title)
+		if err != nil {
+			return it, err
+		}
+		s.dress(&it, kind, slug, text)
+		return it, nil
+	})
+	if err != nil {
+		return nil, fmt.Errorf("unanswered: %w", err)
+	}
+	return items, nil
+}
+
+// dress fills in what a scanned item shows: its kind, its title, a post's
+// body cut down to one, and its link.
+func (s *Source) dress(it *digest.Item, kind string, slug, text *string) {
+	it.Key.Kind = digest.Kind(kind)
+	if text != nil {
+		it.Title = *text
+	}
+	if it.Key.Kind == digest.KindPost {
+		it.Title = digest.Plain(it.Title, titleRunes)
+	} else {
+		it.Title = oneLine(it.Title)
+	}
+	it.Magazine.Title = oneLine(it.Magazine.Title)
+	it.URL = s.url(*it, slug)
 }
 
 // topComments decodes a JSON list of comments from hotSQL; nil is none.

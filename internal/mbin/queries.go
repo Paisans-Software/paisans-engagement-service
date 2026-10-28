@@ -112,6 +112,42 @@ LEFT JOIN LATERAL (
 ) top ON NOT c.federated
 ORDER BY c.score + c.comment_count DESC, c.id, c.kind`
 
+// unansweredSQL is the week's new local threads, entries and posts alike,
+// that nobody but their author has commented on, voted on, boosted or
+// favourited, the newest 200. $1 and $2 are the window's start and end.
+// Columns: kind, id, author, slug, title or body, magazine id, name, title.
+const unansweredSQL = `
+WITH items AS (
+	SELECT 'entry' AS kind, e.id, e.user_id, e.magazine_id, e.slug, e.title AS text, e.created_at
+	FROM entry e
+	WHERE e.created_at >= $1 AND e.created_at < $2 AND e.ap_id IS NULL
+		AND e.visibility = 'visible' AND NOT e.is_adult
+		AND NOT EXISTS (SELECT 1 FROM entry_comment ec WHERE ec.entry_id = e.id
+			AND ec.user_id <> e.user_id AND ec.visibility = 'visible')
+		-- Choice 0 is a vote taken back.
+		AND NOT EXISTS (SELECT 1 FROM entry_vote v WHERE v.entry_id = e.id
+			AND v.user_id <> e.user_id AND v.choice <> 0)
+		AND NOT EXISTS (SELECT 1 FROM favourite f WHERE f.entry_id = e.id AND f.user_id <> e.user_id)
+	UNION ALL
+	SELECT 'post', p.id, p.user_id, p.magazine_id, p.slug, p.body, p.created_at
+	FROM post p
+	WHERE p.created_at >= $1 AND p.created_at < $2 AND p.ap_id IS NULL
+		AND p.visibility = 'visible' AND NOT p.is_adult
+		AND NOT EXISTS (SELECT 1 FROM post_comment pc WHERE pc.post_id = p.id
+			AND pc.user_id <> p.user_id AND pc.visibility = 'visible')
+		AND NOT EXISTS (SELECT 1 FROM post_vote v WHERE v.post_id = p.id
+			AND v.user_id <> p.user_id AND v.choice <> 0)
+		AND NOT EXISTS (SELECT 1 FROM favourite f WHERE f.post_id = p.id AND f.user_id <> p.user_id)
+)
+SELECT i.kind, i.id, i.user_id, i.slug, i.text, m.id, m.name, m.title
+FROM items i
+JOIN magazine m ON m.id = i.magazine_id
+	AND m.visibility = 'visible' AND m.ap_deleted_at IS NULL
+	AND m.marked_for_deletion_at IS NULL AND NOT m.is_adult
+JOIN "user" a ON a.id = i.user_id AND NOT a.is_banned AND NOT a.is_deleted
+ORDER BY i.created_at DESC, i.id, i.kind
+LIMIT 200`
+
 // choicesSQL is what the member has chosen about magazines and people: each
 // row is a set name and an id. $1 is the member's id, $2 the window's start.
 const choicesSQL = `

@@ -3,6 +3,7 @@ package run_test
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -35,7 +36,10 @@ type fakeSource struct {
 	members []digest.Member
 	joined  map[string]bool
 	hotErr  error
-	hots    atomic.Int32
+	// fresh is the week's unanswered threads, and freshErr fails reading them.
+	fresh    []digest.Item
+	freshErr error
+	hots     atomic.Int32
 	// viewErr fails View for the member with that subject.
 	viewErr map[string]error
 	// ready, when set, holds every runner in Members until all have reached
@@ -77,13 +81,23 @@ func (f *fakeSource) Hot(_ context.Context, from, to time.Time) ([]digest.Item, 
 	return []digest.Item{thread}, nil
 }
 
-func (f *fakeSource) View(_ context.Context, m digest.Member, _, _ time.Time, _ []digest.Item) (digest.View, error) {
+func (f *fakeSource) Unanswered(context.Context, time.Time, time.Time) ([]digest.Item, error) {
+	return f.fresh, f.freshErr
+}
+
+// View counts, as Mbin's does, an item the member wrote as joined.
+func (f *fakeSource) View(_ context.Context, m digest.Member, _, _ time.Time, items []digest.Item) (digest.View, error) {
 	if err := f.viewErr[m.Subject]; err != nil {
 		return digest.View{}, err
 	}
 	v := digest.View{Joined: map[digest.Key]bool{}}
 	if f.joined[m.Subject] {
 		v.Joined[thread.Key] = true
+	}
+	for _, it := range items {
+		if it.AuthorID == m.ID {
+			v.Joined[it.Key] = true
+		}
 	}
 	return v, nil
 }
@@ -631,7 +645,7 @@ func TestShownThreadReturnsOnlyWithNewComments(t *testing.T) {
 	if err := runner(s, laterSource{src, busy}, rec).Week(context.Background(), next.AddDate(0, 0, 7)); err != nil {
 		t.Fatal(err)
 	}
-	if len(rec.Messages) != 3 || !strings.Contains(rec.Messages[0].Text, "2 new comments this week") {
+	if len(rec.Messages) != 3 || !strings.Contains(rec.Messages[0].Text, thread.URL) {
 		t.Fatalf("returning thread: %d messages\n%v", len(rec.Messages), rec.Messages)
 	}
 }
@@ -760,5 +774,195 @@ func TestNextWeekSendsAgain(t *testing.T) {
 	}
 	if len(rec.Messages) != 1 {
 		t.Fatalf("sent %d", len(rec.Messages))
+	}
+}
+
+// A preview mails the member the digest a member with no history would get,
+// with their own unsubscribe link. It never reads the member's own view or
+// what they were shown, and claims and records nothing, so the week's real
+// run still reaches them.
+func TestPreviewSendsABlankMembersDigest(t *testing.T) {
+	s := storetest.New(t)
+	src := newSource()
+	// The recipient has joined everything, and reading their view fails, so
+	// the preview has the thread only if it ignores their own activity.
+	src.joined["sub-1"] = true
+	src.viewErr = map[string]error{"sub-1": errors.New("the preview read the member's view")}
+	ctx := context.Background()
+	if _, err := s.Claim(ctx, "sub-1", week.AddDate(0, 0, -7)); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Finish(ctx, "sub-1", week.AddDate(0, 0, -7), store.StatusSent, store.Item{Kind: string(thread.Key.Kind), ID: thread.Key.ID}); err != nil {
+		t.Fatal(err)
+	}
+	rec := &mailtest.Recorder{}
+	r := runner(s, src, rec)
+	if err := r.Preview(ctx, week, "one"); err != nil {
+		t.Fatal(err)
+	}
+	if len(rec.Messages) != 1 || rec.Messages[0].To != "one@example.org" {
+		t.Fatalf("preview messages: %v", countTo(rec.Messages))
+	}
+	m := rec.Messages[0]
+	if m.Subject != "[Preview] This week on Talk · Example Community" {
+		t.Fatalf("subject %q", m.Subject)
+	}
+	if !strings.Contains(m.Text, "grinders") {
+		t.Fatal("the week's thread is not in the preview")
+	}
+	tok, ok := strings.CutPrefix(m.Unsubscribe, "https://digest.example.org/u/")
+	if !ok {
+		t.Fatalf("unsubscribe URL %q", m.Unsubscribe)
+	}
+	if sub, ok := token.Verify(key, tok); !ok || sub != "sub-1" {
+		t.Fatalf("preview unsubscribe token names %q (ok %v), want the recipient", sub, ok)
+	}
+	if got := statuses(t, s); len(got) != 0 {
+		t.Fatalf("preview claimed %v", got)
+	}
+	shown, err := s.Shown(ctx, "sub-1", week.AddDate(0, 0, 7))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(shown) != 1 {
+		t.Fatalf("after the preview, shown is %v", shown)
+	}
+	if _, found, err := s.SavedDigest(ctx, "sub-1", week); err != nil || found {
+		t.Fatalf("after the preview, a digest is stored (%v, %v)", found, err)
+	}
+
+	src.viewErr = nil
+	rec.Messages = nil
+	if err := r.Week(ctx, week); err != nil {
+		t.Fatal(err)
+	}
+	if n := countTo(rec.Messages); n["two@example.org"] != 1 || n["three@example.org"] != 1 {
+		t.Fatalf("after the preview, messages by recipient: %v", n)
+	}
+}
+
+// A preview of a week with nothing for even a blank member, to a member who
+// unsubscribed, or to a username nobody has, sends nothing and fails, so it
+// is not mistaken for a sent preview.
+func TestPreviewRefusesWithoutADigest(t *testing.T) {
+	s := storetest.New(t)
+	if err := s.Unsubscribe(context.Background(), "sub-3", false); err != nil {
+		t.Fatal(err)
+	}
+	// Federated content reaches only a member who follows its magazine, and
+	// a blank member follows none.
+	federated := thread
+	federated.Federated = true
+	cases := []struct {
+		name string
+		src  run.Source
+		to   string
+	}{
+		{"empty week", laterSource{newSource(), federated}, "one"},
+		{"unsubscribed", newSource(), "three"},
+		{"unknown", newSource(), "nobody"},
+	}
+	for _, c := range cases {
+		rec := &mailtest.Recorder{}
+		if err := runner(s, c.src, rec).Preview(context.Background(), week, c.to); err == nil {
+			t.Errorf("%s: no error", c.name)
+		}
+		if len(rec.Messages) != 0 {
+			t.Errorf("%s: %d messages", c.name, len(rec.Messages))
+		}
+	}
+	if got := statuses(t, s); len(got) != 0 {
+		t.Fatalf("previews claimed %v", got)
+	}
+}
+
+// A new thread nobody has answered is offered to everyone but its author,
+// and remembered as shown.
+func TestWeekOffersUnanswered(t *testing.T) {
+	s := storetest.New(t)
+	src := newSource()
+	src.fresh = []digest.Item{{
+		Key: digest.Key{Kind: digest.KindPost, ID: 8}, Title: "anyone for tea",
+		URL:      "https://talk.example.org/m/coffee/p/8/-",
+		Magazine: digest.Magazine{ID: 1, Name: "coffee", Title: "Coffee"}, AuthorID: 2,
+	}}
+	rec := &mailtest.Recorder{}
+	if err := runner(s, src, rec).Week(context.Background(), week); err != nil {
+		t.Fatal(err)
+	}
+	if len(rec.Messages) != 3 {
+		t.Fatalf("%d messages", len(rec.Messages))
+	}
+	for _, m := range rec.Messages {
+		offered := strings.Contains(m.Text, src.fresh[0].URL)
+		if offered == (m.To == "two@example.org") {
+			t.Fatalf("to %s, offered %v:\n%s", m.To, offered, m.Text)
+		}
+	}
+	var n int
+	if err := storetest.Conn(t, s).QueryRow(context.Background(),
+		`SELECT count(*) FROM shown WHERE kind = 'post' AND item_id = 8`).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	if n != 2 {
+		t.Fatalf("shown to %d members", n)
+	}
+	// The stored digest, which the web page shows, carries the same pick
+	// and heading as the email.
+	raw, ok, err := s.SavedDigest(context.Background(), "sub-1", week)
+	if err != nil || !ok {
+		t.Fatalf("stored digest: %v, %v", ok, err)
+	}
+	var d digest.Digest
+	if err := json.Unmarshal(raw, &d); err != nil {
+		t.Fatal(err)
+	}
+	if len(d.Unanswered) != 1 || d.Unanswered[0].Key != src.fresh[0].Key || d.UnansweredHeading == "" {
+		t.Fatalf("stored digest has unanswered %v under %q", d.Unanswered, d.UnansweredHeading)
+	}
+	for _, m := range rec.Messages {
+		if m.To == "one@example.org" && !strings.Contains(m.Text, "\n"+d.UnansweredHeading+"\n") {
+			t.Fatalf("the email's heading is not the stored %q:\n%s", d.UnansweredHeading, m.Text)
+		}
+	}
+}
+
+// Failing to read the unanswered threads fails the run before anyone is
+// claimed, as failing to read the others does.
+func TestWeekUnansweredError(t *testing.T) {
+	s := storetest.New(t)
+	src := newSource()
+	src.freshErr = errors.New("mbin is down")
+	rec := &mailtest.Recorder{}
+	if err := runner(s, src, rec).Week(context.Background(), week); err == nil {
+		t.Fatal("Week succeeded with a failing source")
+	}
+	if got := statuses(t, s); len(got) != 0 || len(rec.Messages) != 0 {
+		t.Fatalf("claimed %v, sent %d", got, len(rec.Messages))
+	}
+}
+
+// A preview offers the week's unanswered threads as a blank member gets
+// them, the recipient's own among them, since a blank member wrote nothing.
+func TestPreviewOffersUnanswered(t *testing.T) {
+	s := storetest.New(t)
+	src := newSource()
+	src.fresh = []digest.Item{{
+		Key: digest.Key{Kind: digest.KindPost, ID: 8}, Title: "anyone for tea",
+		URL:      "https://talk.example.org/m/coffee/p/8/-",
+		Magazine: digest.Magazine{ID: 1, Name: "coffee", Title: "Coffee"}, AuthorID: 1,
+	}}
+	rec := &mailtest.Recorder{}
+	if err := runner(s, src, rec).Preview(context.Background(), week, "one"); err != nil {
+		t.Fatal(err)
+	}
+	if len(rec.Messages) != 1 {
+		t.Fatalf("%d messages", len(rec.Messages))
+	}
+	text := rec.Messages[0].Text
+	heading := strings.Contains(text, "New posts") || strings.Contains(text, "No replies yet") ||
+		strings.Contains(text, "Start the conversation")
+	if !heading || !strings.Contains(text, src.fresh[0].URL) {
+		t.Fatalf("no unanswered section in the preview:\n%s", text)
 	}
 }

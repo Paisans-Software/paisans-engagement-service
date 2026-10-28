@@ -20,25 +20,33 @@ import (
 type sendOpts struct {
 	// member is an Mbin username; empty means every member.
 	member string
+	// preview mails member the digest a brand-new member would get.
+	preview bool
 }
+
+const sendUsage = "usage: send [--member <username> [--preview]]"
 
 func parseSend(args []string) (sendOpts, error) {
 	var o sendOpts
 	fs := flag.NewFlagSet("send", flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
 	member := fs.String("member", "", "")
+	preview := fs.Bool("preview", false, "")
 	if err := fs.Parse(args); err != nil {
-		return o, fmt.Errorf("%w; usage: send [--member <username>]", err)
+		return o, fmt.Errorf("%w; %s", err, sendUsage)
 	}
 	if fs.NArg() > 0 {
-		return o, fmt.Errorf("unexpected argument %q; usage: send [--member <username>]", fs.Arg(0))
+		return o, fmt.Errorf("unexpected argument %q; %s", fs.Arg(0), sendUsage)
 	}
-	set := false
-	fs.Visit(func(f *flag.Flag) { set = set || f.Name == "member" })
-	if set && (*member == "" || strings.TrimSpace(*member) != *member) {
+	set := map[string]bool{}
+	fs.Visit(func(f *flag.Flag) { set[f.Name] = true })
+	if set["member"] && (*member == "" || strings.TrimSpace(*member) != *member) {
 		return o, errors.New("--member needs an Mbin username")
 	}
-	o.member = *member
+	if *preview && !set["member"] {
+		return o, errors.New("--preview needs --member, the member the preview is mailed to")
+	}
+	o.member, o.preview = *member, *preview
 	return o, nil
 }
 
@@ -48,6 +56,7 @@ func sendWeek(now time.Time) time.Time { return run.SendTime(now) }
 
 // send runs one week's digest now, outside the schedule, and returns. Members
 // already claimed for the week are skipped, so it never mails anyone twice.
+// With --preview it mails a preview instead, which claims nobody.
 func send(ctx context.Context, args []string, getenv func(string) string, now func() time.Time) error {
 	opts, err := parseSend(args)
 	if err != nil {
@@ -87,6 +96,10 @@ func send(ctx context.Context, args []string, getenv func(string) string, now fu
 		Only: opts.member,
 	}
 	week := sendWeek(now())
+	if opts.preview {
+		slog.Info("manual digest preview", "week", week.Format("2006-01-02"))
+		return runner.Preview(ctx, week, opts.member)
+	}
 	slog.Info("manual digest send", "week", week.Format("2006-01-02"), "one_member", opts.member != "")
 	return runner.Week(ctx, week)
 }
