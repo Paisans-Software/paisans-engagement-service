@@ -11,16 +11,21 @@ func TestParseSend(t *testing.T) {
 	cases := []struct {
 		args    []string
 		member  string
+		preview bool
 		wantErr bool
 	}{
-		{nil, "", false},
-		{[]string{"--member", "alice"}, "alice", false},
-		{[]string{"-member=alice"}, "alice", false},
-		{[]string{"--member"}, "", true},
-		{[]string{"--member", ""}, "", true},
-		{[]string{"--member", " alice"}, "", true},
-		{[]string{"extra"}, "", true},
-		{[]string{"--everyone"}, "", true},
+		{nil, "", false, false},
+		{[]string{"--member", "alice"}, "alice", false, false},
+		{[]string{"-member=alice"}, "alice", false, false},
+		{[]string{"--member"}, "", false, true},
+		{[]string{"--member", ""}, "", false, true},
+		{[]string{"--member", " alice"}, "", false, true},
+		{[]string{"extra"}, "", false, true},
+		{[]string{"--everyone"}, "", false, true},
+		{[]string{"--member", "alice", "--preview"}, "alice", true, false},
+		{[]string{"--preview", "--member=alice"}, "alice", true, false},
+		{[]string{"--preview"}, "", false, true},
+		{[]string{"--member", "alice", "--preview", "bob"}, "", false, true},
 	}
 	for _, c := range cases {
 		got, err := parseSend(c.args)
@@ -28,8 +33,8 @@ func TestParseSend(t *testing.T) {
 			t.Errorf("parseSend(%q): error %v, want error %v", c.args, err, c.wantErr)
 			continue
 		}
-		if err == nil && got.member != c.member {
-			t.Errorf("parseSend(%q): member %q, want %q", c.args, got.member, c.member)
+		if err == nil && (got.member != c.member || got.preview != c.preview) {
+			t.Errorf("parseSend(%q): member %q preview %v, want %q preview %v", c.args, got.member, got.preview, c.member, c.preview)
 		}
 	}
 }

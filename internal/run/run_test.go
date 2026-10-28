@@ -699,3 +699,99 @@ func TestNextWeekSendsAgain(t *testing.T) {
 		t.Fatalf("sent %d", len(rec.Messages))
 	}
 }
+
+// A preview mails the member the digest a member with no history would get,
+// with their own unsubscribe link. It never reads the member's own view or
+// what they were shown, and claims and records nothing, so the week's real
+// run still reaches them.
+func TestPreviewSendsABlankMembersDigest(t *testing.T) {
+	s := storetest.New(t)
+	src := newSource()
+	// The recipient has joined everything, and reading their view fails, so
+	// the preview has the thread only if it ignores their own activity.
+	src.joined["sub-1"] = true
+	src.viewErr = map[string]error{"sub-1": errors.New("the preview read the member's view")}
+	ctx := context.Background()
+	if _, err := s.Claim(ctx, "sub-1", week.AddDate(0, 0, -7)); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Finish(ctx, "sub-1", week.AddDate(0, 0, -7), store.StatusSent, store.Item{Kind: string(thread.Key.Kind), ID: thread.Key.ID}); err != nil {
+		t.Fatal(err)
+	}
+	rec := &mailtest.Recorder{}
+	r := runner(s, src, rec)
+	if err := r.Preview(ctx, week, "one"); err != nil {
+		t.Fatal(err)
+	}
+	if len(rec.Messages) != 1 || rec.Messages[0].To != "one@example.org" {
+		t.Fatalf("preview messages: %v", countTo(rec.Messages))
+	}
+	m := rec.Messages[0]
+	if m.Subject != "[Preview] This week on Talk · Example Community" {
+		t.Fatalf("subject %q", m.Subject)
+	}
+	if !strings.Contains(m.Text, "grinders") {
+		t.Fatal("the week's thread is not in the preview")
+	}
+	tok, ok := strings.CutPrefix(m.Unsubscribe, "https://digest.example.org/u/")
+	if !ok {
+		t.Fatalf("unsubscribe URL %q", m.Unsubscribe)
+	}
+	if sub, ok := token.Verify(key, tok); !ok || sub != "sub-1" {
+		t.Fatalf("preview unsubscribe token names %q (ok %v), want the recipient", sub, ok)
+	}
+	if got := statuses(t, s); len(got) != 0 {
+		t.Fatalf("preview claimed %v", got)
+	}
+	shown, err := s.Shown(ctx, "sub-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(shown) != 1 {
+		t.Fatalf("after the preview, shown is %v", shown)
+	}
+
+	src.viewErr = nil
+	rec.Messages = nil
+	if err := r.Week(ctx, week); err != nil {
+		t.Fatal(err)
+	}
+	if n := countTo(rec.Messages); n["two@example.org"] != 1 || n["three@example.org"] != 1 {
+		t.Fatalf("after the preview, messages by recipient: %v", n)
+	}
+}
+
+// A preview of a week with nothing for even a blank member, to a member who
+// unsubscribed, or to a username nobody has, sends nothing and fails, so it
+// is not mistaken for a sent preview.
+func TestPreviewRefusesWithoutADigest(t *testing.T) {
+	s := storetest.New(t)
+	if err := s.Unsubscribe(context.Background(), "sub-3"); err != nil {
+		t.Fatal(err)
+	}
+	// Federated content reaches only a member who follows its magazine, and
+	// a blank member follows none.
+	federated := thread
+	federated.Federated = true
+	cases := []struct {
+		name string
+		src  run.Source
+		to   string
+	}{
+		{"empty week", laterSource{newSource(), federated}, "one"},
+		{"unsubscribed", newSource(), "three"},
+		{"unknown", newSource(), "nobody"},
+	}
+	for _, c := range cases {
+		rec := &mailtest.Recorder{}
+		if err := runner(s, c.src, rec).Preview(context.Background(), week, c.to); err == nil {
+			t.Errorf("%s: no error", c.name)
+		}
+		if len(rec.Messages) != 0 {
+			t.Errorf("%s: %d messages", c.name, len(rec.Messages))
+		}
+	}
+	if got := statuses(t, s); len(got) != 0 {
+		t.Fatalf("previews claimed %v", got)
+	}
+}

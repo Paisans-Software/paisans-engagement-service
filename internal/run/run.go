@@ -187,6 +187,60 @@ func (r *Runner) one(ctx context.Context, m digest.Member, from, to time.Time, i
 	return store.StatusSent, sent(d), nil
 }
 
+// Preview mails the member with that username the digest a brand-new member
+// would get for the week: nothing joined, blocked or followed, and nothing
+// shown before. A tester who has joined everything still sees a full digest,
+// and no member's own activity is read. The subject is marked as a preview,
+// and the unsubscribe link is the recipient's own.
+//
+// Nobody is claimed and nothing is recorded as shown, so the week's real run
+// still reaches the member. A recipient who unsubscribed is refused, and so
+// is a week with nothing for even a blank member.
+func (r *Runner) Preview(ctx context.Context, week time.Time, username string) error {
+	from := week.AddDate(0, 0, -7)
+	members, err := r.Source.Members(ctx)
+	if err != nil {
+		return fmt.Errorf("read members: %w", err)
+	}
+	members = only(members, username)
+	if len(members) == 0 {
+		// No username in the message: the operator typed it, and the
+		// error reaches the log.
+		return errors.New("no member with that username gets the digest")
+	}
+	m := members[0]
+	unsub, err := r.Store.Unsubscribed(ctx, m.Subject)
+	if err != nil {
+		return fmt.Errorf("read unsubscribes: %w", err)
+	}
+	if unsub {
+		return errors.New("the member unsubscribed, so no preview is sent")
+	}
+	items, err := r.Source.Hot(ctx, from, week)
+	if err != nil {
+		return fmt.Errorf("read the week's threads: %w", err)
+	}
+	stats, err := r.Source.Stats(ctx, from, week)
+	if err != nil {
+		return fmt.Errorf("read the week's figures: %w", err)
+	}
+	d, ok := digest.Build(items, digest.View{}, stats)
+	if !ok {
+		return errors.New("the week has nothing for even a new member, so there is no digest to preview")
+	}
+	msg, err := mail.Render(d, r.Names, r.SiteURL, r.PublicURL+"/u/"+token.Sign(r.Key, m.Subject), from, week)
+	if err != nil {
+		return fmt.Errorf("render: %w", err)
+	}
+	msg.Subject = "[Preview] " + msg.Subject
+	msg.To = m.Email
+	if err := r.Sender.Send(ctx, msg); err != nil {
+		return err
+	}
+	slog.Info("digest preview sent", "week", week.Format("2006-01-02"), "member", m.ID)
+	return nil
+}
+
 // sent is every thread the digest shows.
 func sent(d digest.Digest) []store.Item {
 	var out []store.Item

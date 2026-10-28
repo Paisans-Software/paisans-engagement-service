@@ -5,6 +5,10 @@ All notable changes to this project are documented here, in the
 
 ## [Unreleased]
 
+### Added
+
+- A `--preview` option for `send --member` that mails the member the digest a brand-new member would get this week, without claiming them for the week.
+
 ### Changed
 
 - The digest email's subject and heading read "This week on" the community rather than "Your week on".
