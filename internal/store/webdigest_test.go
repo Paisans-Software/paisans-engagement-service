@@ -133,3 +133,71 @@ func TestDigestExpiryKeepsWallClock(t *testing.T) {
 		t.Fatalf("expires %v, want %v", exp.In(berlin), want)
 	}
 }
+
+// A preview is readable until its own expiry, a later preview of the same
+// week replaces it, and the purge deletes it once expired.
+func TestPreviewDigest(t *testing.T) {
+	s := storetest.New(t)
+	ctx := context.Background()
+	day := monday.Format("2006-01-02")
+	at := monday.Add(50 * time.Hour)
+	if err := s.SavePreview(ctx, "sub-1", monday, []byte(`{"n":1}`), at); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.SavePreview(ctx, "sub-1", monday, []byte(`{"n":2}`), at.Add(time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	got, ok, err := s.PreviewDigest(ctx, "sub-1", day, at)
+	if err != nil || !ok {
+		t.Fatalf("before expiry: %v, %v", ok, err)
+	}
+	sameJSON(t, got, `{"n":2}`)
+	if _, ok, err := s.PreviewDigest(ctx, "sub-1", day, at.Add(time.Hour)); err != nil || ok {
+		t.Fatalf("at expiry: %v, %v", ok, err)
+	}
+	if _, ok, err := s.PreviewDigest(ctx, "sub-1", "not a date", at); err != nil || ok {
+		t.Fatalf("bad date: %v, %v", ok, err)
+	}
+	if n, err := s.PurgeDigests(ctx, at); err != nil || n != 0 {
+		t.Fatalf("early purge: %d, %v", n, err)
+	}
+	if n, err := s.PurgeDigests(ctx, at.Add(time.Hour)); err != nil || n != 1 {
+		t.Fatalf("purge: %d, %v", n, err)
+	}
+	if n := countPreviews(t, s); n != 0 {
+		t.Fatalf("%d previews after purge", n)
+	}
+}
+
+// A preview is not the member's digest for the week: the week's own reads
+// never see it, and saving the week's digest is not blocked by it.
+func TestPreviewIsNotTheWeek(t *testing.T) {
+	s := storetest.New(t)
+	ctx := context.Background()
+	if err := s.SavePreview(ctx, "sub-1", monday, []byte(`{"preview":true}`), monday.Add(24*time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok, err := s.SavedDigest(ctx, "sub-1", monday); err != nil || ok {
+		t.Fatalf("SavedDigest sees the preview: %v, %v", ok, err)
+	}
+	if got, err := s.DigestsForWeek(ctx, monday); err != nil || len(got) != 0 {
+		t.Fatalf("DigestsForWeek sees the preview: %v, %v", got, err)
+	}
+	if _, ok, err := s.WebDigest(ctx, "sub-1", monday.Format("2006-01-02"), monday); err != nil || ok {
+		t.Fatalf("WebDigest sees the preview: %v, %v", ok, err)
+	}
+	got, err := s.SaveDigest(ctx, "sub-1", monday, []byte(`{"real":true}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	sameJSON(t, got, `{"real":true}`)
+}
+
+func countPreviews(t *testing.T, s *store.Store) int {
+	t.Helper()
+	var n int
+	if err := storetest.Conn(t, s).QueryRow(context.Background(), `SELECT count(*) FROM preview_digests`).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	return n
+}

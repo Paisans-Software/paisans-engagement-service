@@ -2,6 +2,7 @@ package bot
 
 import (
 	"bytes"
+	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
 	"html/template"
@@ -45,14 +46,24 @@ type titled struct {
 }
 
 var weeklyHTML = template.Must(template.New("weekly").Parse(
-	`<p>Your weekly digest from {{.Meta}}</p>` +
+	`<p>{{.Mark}}Your weekly digest from {{.Meta}}</p>` +
 		`{{if .Items}}<ul>{{range .Items}}<li><a href="{{.URL}}">{{if .Post}}&ldquo;{{.Title}}&rdquo;{{else}}{{.Title}}{{end}}</a></li>{{end}}</ul>{{end}}` +
 		`<p>Read the whole digest: <a href="{{.Link}}">{{.Link}}</a></p>` +
 		`<p>Reply stop to stop these messages.</p>`))
 
+// previewMark starts a preview notice.
+const previewMark = "[Preview] "
+
 // Weekly is the Monday notice: up to five threads and posts, the link to the
 // whole digest on the web, and how to stop.
-func Weekly(d digest.Digest, meta, link string) Notice {
+func Weekly(d digest.Digest, meta, link string) Notice { return weekly(d, meta, link, "") }
+
+// WeeklyPreview is the Monday notice marked as a preview.
+func WeeklyPreview(d digest.Digest, meta, link string) Notice {
+	return weekly(d, meta, link, previewMark)
+}
+
+func weekly(d digest.Digest, meta, link, mark string) Notice {
 	var items []titled
 	add := func(it digest.Item) {
 		if len(items) < maxTitles {
@@ -66,7 +77,7 @@ func Weekly(d digest.Digest, meta, link string) Notice {
 		add(it)
 	}
 
-	lines := []string{"Your weekly digest from " + meta, ""}
+	lines := []string{mark + "Your weekly digest from " + meta, ""}
 	if len(items) > 0 {
 		for _, it := range items {
 			if it.Post {
@@ -81,9 +92,9 @@ func Weekly(d digest.Digest, meta, link string) Notice {
 
 	var buf bytes.Buffer
 	data := struct {
-		Meta, Link string
-		Items      []titled
-	}{meta, link, items}
+		Mark, Meta, Link string
+		Items            []titled
+	}{mark, meta, link, items}
 	if err := weeklyHTML.Execute(&buf, data); err != nil {
 		slog.Warn("matrix bot: the notice's HTML could not be rendered; it goes out as plain text", "error", err)
 		buf.Reset()
@@ -98,3 +109,8 @@ func TxnID(subject string, week time.Time) string {
 	h := sha256.Sum256([]byte(subject))
 	return "digest-" + week.Format("2006-01-02") + "-" + hex.EncodeToString(h[:])[:16]
 }
+
+// PreviewTxnID is a new transaction id for a preview notice. Each preview has
+// its own, so a second preview is delivered too, and none is ever a week's
+// TxnID.
+func PreviewTxnID() string { return "preview-" + rand.Text() }

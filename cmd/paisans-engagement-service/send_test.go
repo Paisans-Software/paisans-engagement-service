@@ -12,20 +12,25 @@ func TestParseSend(t *testing.T) {
 		args    []string
 		member  string
 		preview bool
+		matrix  bool
 		wantErr bool
 	}{
-		{nil, "", false, false},
-		{[]string{"--member", "alice"}, "alice", false, false},
-		{[]string{"-member=alice"}, "alice", false, false},
-		{[]string{"--member"}, "", false, true},
-		{[]string{"--member", ""}, "", false, true},
-		{[]string{"--member", " alice"}, "", false, true},
-		{[]string{"extra"}, "", false, true},
-		{[]string{"--everyone"}, "", false, true},
-		{[]string{"--member", "alice", "--preview"}, "alice", true, false},
-		{[]string{"--preview", "--member=alice"}, "alice", true, false},
-		{[]string{"--preview"}, "", false, true},
-		{[]string{"--member", "alice", "--preview", "bob"}, "", false, true},
+		{nil, "", false, false, false},
+		{[]string{"--member", "alice"}, "alice", false, false, false},
+		{[]string{"-member=alice"}, "alice", false, false, false},
+		{[]string{"--member"}, "", false, false, true},
+		{[]string{"--member", ""}, "", false, false, true},
+		{[]string{"--member", " alice"}, "", false, false, true},
+		{[]string{"extra"}, "", false, false, true},
+		{[]string{"--everyone"}, "", false, false, true},
+		{[]string{"--member", "alice", "--preview"}, "alice", true, false, false},
+		{[]string{"--preview", "--member=alice"}, "alice", true, false, false},
+		{[]string{"--preview"}, "", false, false, true},
+		{[]string{"--member", "alice", "--preview", "bob"}, "", false, false, true},
+		{[]string{"--member", "alice", "--matrix"}, "alice", false, true, false},
+		{[]string{"--matrix", "--member=alice", "--preview"}, "alice", true, true, false},
+		{[]string{"--matrix"}, "", false, false, true},
+		{[]string{"--matrix", "--preview"}, "", false, false, true},
 	}
 	for _, c := range cases {
 		got, err := parseSend(c.args)
@@ -33,8 +38,9 @@ func TestParseSend(t *testing.T) {
 			t.Errorf("parseSend(%q): error %v, want error %v", c.args, err, c.wantErr)
 			continue
 		}
-		if err == nil && (got.member != c.member || got.preview != c.preview) {
-			t.Errorf("parseSend(%q): member %q preview %v, want %q preview %v", c.args, got.member, got.preview, c.member, c.preview)
+		if err == nil && (got.member != c.member || got.preview != c.preview || got.matrix != c.matrix) {
+			t.Errorf("parseSend(%q): member %q preview %v matrix %v, want %q preview %v matrix %v",
+				c.args, got.member, got.preview, got.matrix, c.member, c.preview, c.matrix)
 		}
 	}
 }
@@ -69,5 +75,27 @@ func TestSendRefusesWithoutMailHost(t *testing.T) {
 	err := send(context.Background(), nil, func(k string) string { return env[k] }, time.Now)
 	if err == nil || !strings.Contains(err.Error(), "ENGAGEMENT_SMTP_HOST") {
 		t.Fatalf("send without a mail host: %v", err)
+	}
+}
+
+// Without every Matrix variable, send --matrix refuses before it opens any
+// database, and names what is missing; it needs no mail host.
+func TestSendMatrixRefusesWithoutMatrix(t *testing.T) {
+	env := map[string]string{
+		"ENGAGEMENT_PUBLIC_URL":         "https://digest.example.org",
+		"ENGAGEMENT_DATABASE_URL":       "postgres://unreachable.invalid/engagement",
+		"ENGAGEMENT_MBIN_DATABASE_URL":  "postgres://unreachable.invalid/mbin",
+		"ENGAGEMENT_MBIN_URL":           "https://talk.example.org",
+		"ENGAGEMENT_INSTANCE_TITLE":     "Talk",
+		"ENGAGEMENT_META_TITLE":         "Talk",
+		"ENGAGEMENT_SIGNING_KEY":        "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+		"ENGAGEMENT_MATRIX_URL":         "https://matrix.example.org",
+		"ENGAGEMENT_MATRIX_SERVER_NAME": "example.org",
+	}
+	for _, args := range [][]string{{"--member", "alice", "--matrix"}, {"--member", "alice", "--matrix", "--preview"}} {
+		err := send(context.Background(), args, func(k string) string { return env[k] }, time.Now)
+		if err == nil || !strings.Contains(err.Error(), "ENGAGEMENT_MAS_ADMIN_URL") || strings.Contains(err.Error(), "SMTP") {
+			t.Fatalf("send %q without Matrix: %v", args, err)
+		}
 	}
 }
