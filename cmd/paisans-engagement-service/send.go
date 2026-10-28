@@ -20,19 +20,18 @@ import (
 type sendOpts struct {
 	// member is an Mbin username; empty means every member.
 	member string
-	// as, when set, previews the digest of the member with that username,
-	// mailed to member.
-	as string
+	// preview mails member the digest a brand-new member would get.
+	preview bool
 }
 
-const sendUsage = "usage: send [--member <username> [--as <username>]]"
+const sendUsage = "usage: send [--member <username> [--preview]]"
 
 func parseSend(args []string) (sendOpts, error) {
 	var o sendOpts
 	fs := flag.NewFlagSet("send", flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
 	member := fs.String("member", "", "")
-	as := fs.String("as", "", "")
+	preview := fs.Bool("preview", false, "")
 	if err := fs.Parse(args); err != nil {
 		return o, fmt.Errorf("%w; %s", err, sendUsage)
 	}
@@ -41,18 +40,13 @@ func parseSend(args []string) (sendOpts, error) {
 	}
 	set := map[string]bool{}
 	fs.Visit(func(f *flag.Flag) { set[f.Name] = true })
-	for _, f := range []struct {
-		name string
-		v    string
-	}{{"member", *member}, {"as", *as}} {
-		if set[f.name] && (f.v == "" || strings.TrimSpace(f.v) != f.v) {
-			return o, fmt.Errorf("--%s needs an Mbin username", f.name)
-		}
+	if set["member"] && (*member == "" || strings.TrimSpace(*member) != *member) {
+		return o, errors.New("--member needs an Mbin username")
 	}
-	if set["as"] && !set["member"] {
-		return o, errors.New("--as needs --member, the member the preview is mailed to")
+	if *preview && !set["member"] {
+		return o, errors.New("--preview needs --member, the member the preview is mailed to")
 	}
-	o.member, o.as = *member, *as
+	o.member, o.preview = *member, *preview
 	return o, nil
 }
 
@@ -62,7 +56,7 @@ func sendWeek(now time.Time) time.Time { return run.SendTime(now) }
 
 // send runs one week's digest now, outside the schedule, and returns. Members
 // already claimed for the week are skipped, so it never mails anyone twice.
-// With --as it mails a preview instead, which claims nobody.
+// With --preview it mails a preview instead, which claims nobody.
 func send(ctx context.Context, args []string, getenv func(string) string, now func() time.Time) error {
 	opts, err := parseSend(args)
 	if err != nil {
@@ -102,9 +96,9 @@ func send(ctx context.Context, args []string, getenv func(string) string, now fu
 		Only: opts.member,
 	}
 	week := sendWeek(now())
-	if opts.as != "" {
+	if opts.preview {
 		slog.Info("manual digest preview", "week", week.Format("2006-01-02"))
-		return runner.Preview(ctx, week, opts.member, opts.as)
+		return runner.Preview(ctx, week, opts.member)
 	}
 	slog.Info("manual digest send", "week", week.Format("2006-01-02"), "one_member", opts.member != "")
 	return runner.Week(ctx, week)
