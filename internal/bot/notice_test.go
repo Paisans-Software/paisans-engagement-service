@@ -86,3 +86,32 @@ func TestTxnIDStable(t *testing.T) {
 		t.Fatalf("id = %q", a)
 	}
 }
+
+func TestWeeklyPreview(t *testing.T) {
+	d := digest.Digest{Featured: &digest.Featured{Item: item(digest.KindEntry, "Grinders", "https://t/1")}}
+	n := WeeklyPreview(d, "Talk", "https://web/d/tok")
+	want := "[Preview] Your weekly digest from Talk\n\n• Grinders\n\n" +
+		"Read the whole digest: https://web/d/tok\n\nReply stop to stop these messages."
+	if n.Body != want {
+		t.Fatalf("body = %q", n.Body)
+	}
+	if !strings.HasPrefix(n.FormattedBody, "<p>[Preview] Your weekly digest from Talk</p>") {
+		t.Fatalf("formatted = %q", n.FormattedBody)
+	}
+	if w := Weekly(d, "Talk", "https://web/d/tok"); strings.Contains(w.Body+w.FormattedBody, "Preview") {
+		t.Fatalf("weekly marked as a preview: %q", w.Body)
+	}
+}
+
+// A preview's transaction id is new each time, so a second preview is
+// delivered, and never one a week's notice uses.
+func TestPreviewTxnID(t *testing.T) {
+	w := time.Date(2026, 10, 26, 0, 0, 0, 0, time.UTC)
+	a, b := PreviewTxnID(), PreviewTxnID()
+	if a == b {
+		t.Fatal("two previews share a transaction id")
+	}
+	if !strings.HasPrefix(a, "preview-") || strings.HasPrefix(a, "digest-") || a == TxnID("sub-1", w) {
+		t.Fatalf("id = %q", a)
+	}
+}

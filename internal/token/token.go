@@ -1,7 +1,7 @@
 // Package token signs the unsubscribe links in the digest email and the web
-// digest links in the Matrix notice. A token carries the member's subject and
-// a MAC over it, so the public route can act on a link without a session or a
-// lookup.
+// digest and preview links in the Matrix notice. A token carries the member's
+// subject and a MAC over it, so the public route can act on a link without a
+// session or a lookup.
 package token
 
 import (
@@ -51,25 +51,27 @@ func Verify(key []byte, tok string) (subject string, ok bool) {
 	return string(b), true
 }
 
-// digestMAC binds the purpose, the subject and the week, so a digest token
-// cannot be read as an unsubscribe token or reused for another week.
-func digestMAC(key []byte, subject, date string) []byte {
+// datedMAC binds the purpose, the subject and the week, so a token for one
+// purpose cannot be read as another's or reused for another week.
+func datedMAC(key []byte, purpose, subject, date string) []byte {
 	m := hmac.New(sha256.New, key)
-	m.Write([]byte("digest\x00" + subject + "\x00" + date))
+	m.Write([]byte(purpose + "\x00" + subject + "\x00" + date))
 	return m.Sum(nil)
 }
 
-// SignDigest returns the token for subject's digest of the week that week
-// falls on, dated by week's own local calendar day.
-func SignDigest(key []byte, subject string, week time.Time) string {
+// Purposes of the tokens that name a member and a week.
+const (
+	purposeDigest  = "digest"
+	purposePreview = "preview"
+)
+
+func signDated(key []byte, purpose, subject string, week time.Time) string {
 	date := week.Format("2006-01-02")
 	return base64.RawURLEncoding.EncodeToString([]byte(subject+"\x00"+date)) + "." +
-		base64.RawURLEncoding.EncodeToString(digestMAC(key, subject, date))
+		base64.RawURLEncoding.EncodeToString(datedMAC(key, purpose, subject, date))
 }
 
-// VerifyDigest returns the subject and the week's date as YYYY-MM-DD, and
-// false for anything malformed, empty of a subject, or not signed with key.
-func VerifyDigest(key []byte, tok string) (subject, weekDate string, ok bool) {
+func verifyDated(key []byte, purpose, tok string) (subject, weekDate string, ok bool) {
 	payload, sig, found := strings.Cut(tok, ".")
 	if !found || strings.ContainsAny(tok, "\r\n") {
 		return "", "", false
@@ -87,8 +89,32 @@ func VerifyDigest(key []byte, tok string) (subject, weekDate string, ok bool) {
 	if _, err := time.Parse("2006-01-02", weekDate); err != nil {
 		return "", "", false
 	}
-	if !hmac.Equal(got, digestMAC(key, subject, weekDate)) {
+	if !hmac.Equal(got, datedMAC(key, purpose, subject, weekDate)) {
 		return "", "", false
 	}
 	return subject, weekDate, true
+}
+
+// SignDigest returns the token for subject's digest of the week that week
+// falls on, dated by week's own local calendar day.
+func SignDigest(key []byte, subject string, week time.Time) string {
+	return signDated(key, purposeDigest, subject, week)
+}
+
+// VerifyDigest returns the subject and the week's date as YYYY-MM-DD, and
+// false for anything malformed, empty of a subject, or not signed with key.
+func VerifyDigest(key []byte, tok string) (subject, weekDate string, ok bool) {
+	return verifyDated(key, purposeDigest, tok)
+}
+
+// SignPreview returns the token for subject's preview of the week's digest.
+// Its purpose differs from the digest token's, so it never opens the
+// member's own digest for the week, and a digest token never opens a preview.
+func SignPreview(key []byte, subject string, week time.Time) string {
+	return signDated(key, purposePreview, subject, week)
+}
+
+// VerifyPreview is VerifyDigest for a preview token.
+func VerifyPreview(key []byte, tok string) (subject, weekDate string, ok bool) {
+	return verifyDated(key, purposePreview, tok)
 }

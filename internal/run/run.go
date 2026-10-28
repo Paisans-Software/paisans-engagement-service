@@ -62,6 +62,10 @@ type Runner struct {
 	// Rand picks the unanswered threads each digest offers; nil is the
 	// random package's own source.
 	Rand *rand.Rand
+
+	// anyDay lifts the end of the send day from the Matrix pass, for a
+	// Matrix send run by hand on a later day.
+	anyDay bool
 }
 
 func (r *Runner) now() time.Time {
@@ -381,10 +385,11 @@ func (r *Runner) matrixPass(ctx context.Context, members []digest.Member, week t
 		return nil, nil
 	}
 	// The send day ends at local midnight after week, in week's location.
+	// A send by hand with anyDay has no end.
 	y, mo, d := week.Date()
 	end := time.Date(y, mo, d+1, 0, 0, 0, 0, week.Location())
 	now := r.now()
-	if !now.Before(end) {
+	if !r.anyDay && !now.Before(end) {
 		slog.Info("the send day is over; no Matrix notices are sent", "week", week.Format("2006-01-02"))
 		return nil, nil
 	}
@@ -413,10 +418,16 @@ func (r *Runner) matrixPass(ctx context.Context, members []digest.Member, week t
 	// Waits for the homeserver's rate limits end with the day too. A wait
 	// that would outlast the day ends early with context.DeadlineExceeded
 	// while dctx itself is still live, and that too is the day ending.
-	dctx, cancel := context.WithTimeout(ctx, end.Sub(now))
+	dctx, cancel := ctx, context.CancelFunc(func() {})
+	if !r.anyDay {
+		dctx, cancel = context.WithTimeout(ctx, end.Sub(now))
+	}
 	defer cancel()
 	ended := false
 	dayOver := func(err error) bool {
+		if r.anyDay {
+			return false
+		}
 		if ctx.Err() == nil && (dctx.Err() != nil || !r.now().Before(end) || errors.Is(err, context.DeadlineExceeded)) {
 			ended = true
 		}
@@ -576,22 +587,14 @@ func (r *Runner) matrixPass(ctx context.Context, members []digest.Member, week t
 // and the unsubscribe link is the recipient's own.
 //
 // Nobody is claimed, nothing is recorded as shown and no digest is stored, so
-// the week's real run still reaches the member and builds their own. It is
-// email only. A recipient who unsubscribed or has no verified address is
-// refused, and so is a week with nothing for even a blank member.
+// the week's real run still reaches the member and builds their own. A
+// recipient who unsubscribed or has no verified address is refused, and so is
+// a week with nothing for even a blank member.
 func (r *Runner) Preview(ctx context.Context, week time.Time, username string) error {
-	from := week.AddDate(0, 0, -7)
-	members, err := r.Source.Members(ctx)
+	m, err := r.member(ctx, username)
 	if err != nil {
-		return fmt.Errorf("read members: %w", err)
+		return err
 	}
-	members = only(members, username)
-	if len(members) == 0 {
-		// No username in the message: the operator typed it, and the
-		// error reaches the log.
-		return errors.New("no member with that username gets the digest")
-	}
-	m := members[0]
 	if m.Email == "" {
 		return errors.New("the member has no verified email address, so no preview is sent")
 	}
@@ -602,23 +605,11 @@ func (r *Runner) Preview(ctx context.Context, week time.Time, username string) e
 	if unsub {
 		return errors.New("the member unsubscribed, so no preview is sent")
 	}
-	items, err := r.Source.Hot(ctx, from, week)
+	d, err := r.blankDigest(ctx, week)
 	if err != nil {
-		return fmt.Errorf("read the week's threads: %w", err)
+		return err
 	}
-	fresh, err := r.Source.Unanswered(ctx, from, week)
-	if err != nil {
-		return fmt.Errorf("read the week's unanswered threads: %w", err)
-	}
-	stats, err := r.Source.Stats(ctx, from, week)
-	if err != nil {
-		return fmt.Errorf("read the week's figures: %w", err)
-	}
-	d, ok := digest.Build(items, digest.View{}, stats)
-	if !ok {
-		return errors.New("the week has nothing for even a new member, so there is no digest to preview")
-	}
-	d.AddUnanswered(fresh, digest.View{}, r.Rand)
+	from := week.AddDate(0, 0, -7)
 	msg, err := mail.Render(d, r.Names, r.SiteURL, r.PublicURL+"/u/"+token.Sign(r.Key, m.Subject), from, week)
 	if err != nil {
 		return fmt.Errorf("render: %w", err)
@@ -630,6 +621,145 @@ func (r *Runner) Preview(ctx context.Context, week time.Time, username string) e
 	}
 	slog.Info("digest preview sent", "week", week.Format("2006-01-02"), "member", m.ID)
 	return nil
+}
+
+// PreviewMatrix sends the member with that username the Monday notice built
+// from the digest a brand-new member would get for the week, as Preview
+// builds it, marked as a preview and with a new transaction id, into their
+// room with the bot, which is made if they have none. Its link opens a copy
+// of that digest stored apart from the week's digests for store.PreviewLife.
+//
+// Nobody is claimed, nothing is recorded as shown and the member's digest for
+// the week is neither stored nor read, so the week's Matrix pass still sends
+// them their own notice. A member who is unknown, stopped the bot or has no
+// linked Matrix account is refused, and so is a week with nothing for even a
+// blank member.
+func (r *Runner) PreviewMatrix(ctx context.Context, week time.Time, username string) error {
+	m, dm, err := r.matrixMember(ctx, username)
+	if err != nil {
+		return err
+	}
+	d, err := r.blankDigest(ctx, week)
+	if err != nil {
+		return err
+	}
+	t, err := r.matrixTarget(ctx, dm, m)
+	if err != nil {
+		return err
+	}
+	content, err := json.Marshal(d)
+	if err != nil {
+		return fmt.Errorf("encode the digest: %w", err)
+	}
+	if err := r.Store.SavePreview(ctx, m.Subject, week, content, r.now().Add(store.PreviewLife)); err != nil {
+		return fmt.Errorf("store the preview: %w", err)
+	}
+	link := r.PublicURL + "/d/" + token.SignPreview(r.Key, m.Subject, week)
+	out, err := dm.Deliver(ctx, t, bot.PreviewTxnID(), bot.WeeklyPreview(d, r.Names.Meta, link))
+	switch {
+	case err != nil:
+		return fmt.Errorf("matrix preview: %w", err)
+	case out == bot.Off:
+		return errors.New("the member stopped the Digest Bot's messages, so no preview is sent")
+	case out == bot.Refused:
+		return errors.New("the homeserver refused the preview")
+	case out != bot.Sent:
+		return fmt.Errorf("unknown delivery outcome %d", out)
+	}
+	slog.Info("matrix preview sent", "week", week.Format("2006-01-02"), "member", m.ID)
+	return nil
+}
+
+// MatrixWeek sends the member with that username their Matrix notice for the
+// week now, as the Matrix pass of Week would for them alone, on whatever day
+// it runs: their digest is the stored one or built and stored, the send is
+// claimed and recorded, and a member whose notice for the week was already
+// sent is skipped. No email is sent and nobody else is claimed. A member who
+// is unknown, stopped the bot or has no linked Matrix account is refused.
+func (r *Runner) MatrixWeek(ctx context.Context, week time.Time, username string) error {
+	m, dm, err := r.matrixMember(ctx, username)
+	if err != nil {
+		return err
+	}
+	if _, err := r.matrixTarget(ctx, dm, m); err != nil {
+		return err
+	}
+	one := *r
+	one.Sender, one.Only, one.anyDay = nil, username, true
+	return one.Week(ctx, week)
+}
+
+// member is the member with that username.
+func (r *Runner) member(ctx context.Context, username string) (digest.Member, error) {
+	members, err := r.Source.Members(ctx)
+	if err != nil {
+		return digest.Member{}, fmt.Errorf("read members: %w", err)
+	}
+	members = only(members, username)
+	if len(members) == 0 {
+		// No username in the message: the operator typed it, and the
+		// error reaches the log.
+		return digest.Member{}, errors.New("no member with that username gets the digest")
+	}
+	return members[0], nil
+}
+
+// matrixMember is the member with that username and the running bot, or a
+// refusal: the member is unknown or stopped the bot, or no bot runs.
+func (r *Runner) matrixMember(ctx context.Context, username string) (digest.Member, DM, error) {
+	m, err := r.member(ctx, username)
+	if err != nil {
+		return m, nil, err
+	}
+	dm := r.bot()
+	if dm == nil {
+		return m, nil, errors.New("the Digest Bot is not running, so nothing is sent")
+	}
+	mm, err := r.Store.MatrixMember(ctx, m.Subject)
+	if err != nil {
+		return m, nil, fmt.Errorf("read the Matrix setting: %w", err)
+	}
+	if !mm.Enabled {
+		return m, nil, errors.New("the member stopped the Digest Bot's messages, so nothing is sent")
+	}
+	return m, dm, nil
+}
+
+// matrixTarget is the member's Matrix target, or a refusal when MAS links no
+// usable Matrix account to them.
+func (r *Runner) matrixTarget(ctx context.Context, dm DM, m digest.Member) (bot.Target, error) {
+	t, ok, err := dm.Prepare(ctx, m.Subject)
+	if err != nil {
+		return t, fmt.Errorf("look up the member's Matrix account: %w", err)
+	}
+	if !ok {
+		return t, errors.New("the member has no Matrix account linked through MAS, or it is locked or deactivated, so nothing is sent")
+	}
+	return t, nil
+}
+
+// blankDigest is the digest a brand-new member would get for the week, or an
+// error when the week has nothing for even them.
+func (r *Runner) blankDigest(ctx context.Context, week time.Time) (digest.Digest, error) {
+	from := week.AddDate(0, 0, -7)
+	items, err := r.Source.Hot(ctx, from, week)
+	if err != nil {
+		return digest.Digest{}, fmt.Errorf("read the week's threads: %w", err)
+	}
+	fresh, err := r.Source.Unanswered(ctx, from, week)
+	if err != nil {
+		return digest.Digest{}, fmt.Errorf("read the week's unanswered threads: %w", err)
+	}
+	stats, err := r.Source.Stats(ctx, from, week)
+	if err != nil {
+		return digest.Digest{}, fmt.Errorf("read the week's figures: %w", err)
+	}
+	d, ok := digest.Build(items, digest.View{}, stats)
+	if !ok {
+		return d, errors.New("the week has nothing for even a new member, so there is no digest to preview")
+	}
+	d.AddUnanswered(fresh, digest.View{}, r.Rand)
+	return d, nil
 }
 
 // sent is every thread the digest shows.

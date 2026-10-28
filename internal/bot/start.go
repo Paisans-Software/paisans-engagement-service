@@ -63,6 +63,9 @@ type Bot struct {
 	members MemberChecker
 	cfg     Config
 	userID  string
+	// shared is true for a bot that Once attached to the running service's
+	// token: it never renews the token, only takes a newer stored one.
+	shared bool
 
 	mu  sync.Mutex // serialises token renewal and guards tok
 	tok string     // the token the Matrix client holds
@@ -267,6 +270,9 @@ func (b *Bot) renew(ctx context.Context, stale string) error {
 	defer b.mu.Unlock()
 	if b.tok != stale {
 		return nil
+	}
+	if b.shared {
+		return b.adoptStored(ctx, stale)
 	}
 	var tok string
 	sid, ok, err := b.st.BotState(ctx, keySession)

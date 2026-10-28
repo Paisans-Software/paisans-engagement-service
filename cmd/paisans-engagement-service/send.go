@@ -7,11 +7,15 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"net/http"
 	"strings"
 	"time"
 
+	"github.com/paisans-software/paisans-engagement-service/internal/bot"
 	"github.com/paisans-software/paisans-engagement-service/internal/config"
 	"github.com/paisans-software/paisans-engagement-service/internal/mail"
+	"github.com/paisans-software/paisans-engagement-service/internal/mas"
+	"github.com/paisans-software/paisans-engagement-service/internal/matrix"
 	"github.com/paisans-software/paisans-engagement-service/internal/mbin"
 	"github.com/paisans-software/paisans-engagement-service/internal/run"
 	"github.com/paisans-software/paisans-engagement-service/internal/store"
@@ -20,11 +24,13 @@ import (
 type sendOpts struct {
 	// member is an Mbin username; empty means every member.
 	member string
-	// preview mails member the digest a brand-new member would get.
+	// preview sends member the digest a brand-new member would get.
 	preview bool
+	// matrix sends member the Matrix notice instead of the email.
+	matrix bool
 }
 
-const sendUsage = "usage: send [--member <username> [--preview]]"
+const sendUsage = "usage: send [--member <username> [--matrix] [--preview]]"
 
 func parseSend(args []string) (sendOpts, error) {
 	var o sendOpts
@@ -32,6 +38,7 @@ func parseSend(args []string) (sendOpts, error) {
 	fs.SetOutput(io.Discard)
 	member := fs.String("member", "", "")
 	preview := fs.Bool("preview", false, "")
+	toMatrix := fs.Bool("matrix", false, "")
 	if err := fs.Parse(args); err != nil {
 		return o, fmt.Errorf("%w; %s", err, sendUsage)
 	}
@@ -46,7 +53,10 @@ func parseSend(args []string) (sendOpts, error) {
 	if *preview && !set["member"] {
 		return o, errors.New("--preview needs --member, the member the preview is mailed to")
 	}
-	o.member, o.preview = *member, *preview
+	if *toMatrix && !set["member"] {
+		return o, errors.New("--matrix needs --member, the member the Matrix message is sent to")
+	}
+	o.member, o.preview, o.matrix = *member, *preview, *toMatrix
 	return o, nil
 }
 
@@ -56,7 +66,9 @@ func sendWeek(now time.Time) time.Time { return run.SendTime(now) }
 
 // send runs one week's digest now, outside the schedule, and returns. Members
 // already claimed for the week are skipped, so it never mails anyone twice.
-// With --preview it mails a preview instead, which claims nobody.
+// With --preview it mails a preview instead, which claims nobody. With
+// --matrix it sends the member's Matrix notice, or its preview, instead of
+// the email.
 func send(ctx context.Context, args []string, getenv func(string) string, now func() time.Time) error {
 	opts, err := parseSend(args)
 	if err != nil {
@@ -66,12 +78,18 @@ func send(ctx context.Context, args []string, getenv func(string) string, now fu
 	if err != nil {
 		return err
 	}
-	if cfg.SMTP.Host == "" {
+	if opts.matrix {
+		if missing := cfg.Matrix.Missing(); len(missing) > 0 {
+			return fmt.Errorf("the Digest Bot is not configured: %s not set", strings.Join(missing, ", "))
+		}
+	} else if cfg.SMTP.Host == "" {
 		return errors.New("ENGAGEMENT_SMTP_HOST is not set, so there is no mail host to send through")
 	}
-	sender, err := mail.NewSMTP(cfg.SMTP)
-	if err != nil {
-		return err
+	var sender mail.Sender
+	if !opts.matrix {
+		if sender, err = mail.NewSMTP(cfg.SMTP); err != nil {
+			return err
+		}
 	}
 	st, err := store.Open(ctx, cfg.DatabaseURL)
 	if err != nil {
@@ -96,10 +114,44 @@ func send(ctx context.Context, args []string, getenv func(string) string, now fu
 		Only: opts.member,
 	}
 	week := sendWeek(now())
+	if opts.matrix {
+		return sendMatrix(ctx, cfg, st, src, runner, week, opts)
+	}
 	if opts.preview {
 		slog.Info("manual digest preview", "week", week.Format("2006-01-02"))
 		return runner.Preview(ctx, week, opts.member)
 	}
 	slog.Info("manual digest send", "week", week.Format("2006-01-02"), "one_member", opts.member != "")
 	return runner.Week(ctx, week)
+}
+
+// sendMatrix sends the member's Matrix notice for the week, or its preview,
+// as the Digest Bot. bot.Once decides how this process acts as the bot: with
+// the bot lock, held only for this send, when no copy of the service runs the
+// bot, and otherwise with the running bot's stored token, leaving the
+// service's lock and listener alone.
+func sendMatrix(ctx context.Context, cfg config.Config, st *store.Store, src *mbin.Source, runner *run.Runner, week time.Time, opts sendOpts) error {
+	b, done, err := bot.Once(ctx, bot.Deps{
+		Matrix:  matrix.New(cfg.Matrix.URL, &http.Client{Timeout: 60 * time.Second}, matrix.DefaultPacing),
+		MAS:     mas.New(cfg.Matrix.MASAdminURL, cfg.Matrix.ClientID, cfg.Matrix.ClientSecret, &http.Client{Timeout: 30 * time.Second}),
+		Store:   st,
+		Members: src,
+		Config: bot.Config{
+			ServerName: cfg.Matrix.ServerName,
+			Provider:   cfg.Matrix.UpstreamProvider,
+			Localpart:  cfg.Matrix.BotLocalpart,
+		},
+	})
+	if err != nil {
+		return fmt.Errorf("the Digest Bot cannot start: %w", err)
+	}
+	defer done()
+	runner.Matrix = func() run.DM { return b }
+	runner.MatrixConfigured = true
+	if opts.preview {
+		slog.Info("manual matrix preview", "week", week.Format("2006-01-02"))
+		return runner.PreviewMatrix(ctx, week, opts.member)
+	}
+	slog.Info("manual matrix send", "week", week.Format("2006-01-02"))
+	return runner.MatrixWeek(ctx, week, opts.member)
 }

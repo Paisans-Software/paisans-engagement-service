@@ -72,12 +72,51 @@ func (s *Store) WebDigest(ctx context.Context, subject, weekDate string, now tim
 	return got, err == nil, err
 }
 
-// PurgeDigests deletes every digest that has expired by now and reports how
-// many there were.
+// PurgeDigests deletes every digest and every preview that has expired by
+// now and reports how many there were.
 func (s *Store) PurgeDigests(ctx context.Context, now time.Time) (int64, error) {
-	tag, err := s.pool.Exec(ctx, `DELETE FROM web_digests WHERE expires_at <= $1`, now)
-	if err != nil {
-		return 0, err
+	var n int64
+	for _, q := range []string{
+		`DELETE FROM web_digests WHERE expires_at <= $1`,
+		`DELETE FROM preview_digests WHERE expires_at <= $1`,
+	} {
+		tag, err := s.pool.Exec(ctx, q, now)
+		if err != nil {
+			return n, err
+		}
+		n += tag.RowsAffected()
 	}
-	return tag.RowsAffected(), nil
+	return n, nil
+}
+
+// PreviewLife is how long a preview stays readable on the web.
+const PreviewLife = 24 * time.Hour
+
+// SavePreview stores content as the member's preview of the week's digest,
+// replacing an earlier preview of the same week, readable until expires. A
+// preview is kept apart from the week's digest: SavedDigest, DigestsForWeek
+// and WebDigest never read it, and SaveDigest is never blocked by it.
+func (s *Store) SavePreview(ctx context.Context, subject string, week time.Time, content []byte, expires time.Time) error {
+	_, err := s.pool.Exec(ctx,
+		`INSERT INTO preview_digests (subject, week, content, expires_at) VALUES ($1, $2::date, $3, $4)
+		ON CONFLICT (subject, week) DO UPDATE SET content=EXCLUDED.content, expires_at=EXCLUDED.expires_at`,
+		subject, weekDate(week), content, expires)
+	return err
+}
+
+// PreviewDigest is the member's stored preview for the week (YYYY-MM-DD)
+// only while now is before its expiry. A weekDate that is not a date finds
+// nothing.
+func (s *Store) PreviewDigest(ctx context.Context, subject, weekDate string, now time.Time) ([]byte, bool, error) {
+	if _, err := time.Parse(time.DateOnly, weekDate); err != nil {
+		return nil, false, nil
+	}
+	var got []byte
+	err := s.pool.QueryRow(ctx,
+		`SELECT content FROM preview_digests WHERE subject=$1 AND week=$2::date AND expires_at > $3`,
+		subject, weekDate, now).Scan(&got)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, false, nil
+	}
+	return got, err == nil, err
 }

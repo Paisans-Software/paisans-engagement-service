@@ -1,6 +1,6 @@
 // Package web is the service's only public surface: the unsubscribe link in
-// the digest email, each sent digest's page, and a health check for the
-// container.
+// the digest email, each sent digest's page and each preview's, and a health
+// check for the container.
 package web
 
 import (
@@ -136,10 +136,16 @@ func (s *server) fail(w http.ResponseWriter, what string) {
 	w.Write([]byte("Something went wrong. Please try the link again."))
 }
 
-// page renders a sent digest. It reads and records nothing else, so a link
-// checker's GET or HEAD changes nothing. HEAD gets the same status and headers without the body.
+// page renders a sent digest, or a preview for a preview token. It reads and
+// records nothing else, so a link checker's GET or HEAD changes nothing. HEAD
+// gets the same status and headers without the body.
 func (s *server) page(w http.ResponseWriter, r *http.Request) {
+	read := s.store.WebDigest
 	subject, date, ok := token.VerifyDigest(s.key, r.PathValue("token"))
+	if !ok {
+		read = s.store.PreviewDigest
+		subject, date, ok = token.VerifyPreview(s.key, r.PathValue("token"))
+	}
 	if !ok {
 		s.invalid(w, r)
 		return
@@ -150,7 +156,7 @@ func (s *server) page(w http.ResponseWriter, r *http.Request) {
 		s.invalid(w, r)
 		return
 	}
-	content, found, err := s.store.WebDigest(r.Context(), subject, date, s.now())
+	content, found, err := read(r.Context(), subject, date, s.now())
 	if err != nil {
 		s.fail(w, "reading a web digest failed")
 		return

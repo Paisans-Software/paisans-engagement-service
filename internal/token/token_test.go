@@ -147,3 +147,43 @@ func TestDigestAltered(t *testing.T) {
 		}
 	}
 }
+
+func TestPreviewRoundTrip(t *testing.T) {
+	sub, date, ok := VerifyPreview(key, SignPreview(key, "sub-1", digestWeek))
+	if !ok || sub != "sub-1" || date != "2026-10-26" {
+		t.Fatal(sub, date, ok)
+	}
+}
+
+// A preview token is never read as the week's digest token, or the other way
+// round, so a preview link cannot open the member's real digest.
+func TestPreviewAndDigestDoNotCross(t *testing.T) {
+	if _, _, ok := VerifyDigest(key, SignPreview(key, "sub-1", digestWeek)); ok {
+		t.Fatal("preview token read as digest")
+	}
+	if _, _, ok := VerifyPreview(key, SignDigest(key, "sub-1", digestWeek)); ok {
+		t.Fatal("digest token read as preview")
+	}
+	if _, ok := Verify(key, SignPreview(key, "sub-1", digestWeek)); ok {
+		t.Fatal("preview token read as unsubscribe")
+	}
+	if _, _, ok := VerifyPreview(key, Sign(key, "sub-1")); ok {
+		t.Fatal("unsubscribe token read as preview")
+	}
+}
+
+func TestPreviewAltered(t *testing.T) {
+	good := SignPreview(key, "sub-1", digestWeek)
+	_, sig, _ := strings.Cut(good, ".")
+	p, _, _ := strings.Cut(SignPreview(key, "sub-2", digestWeek), ".")
+	for name, tok := range map[string]string{
+		"other subject": p + "." + sig,
+		"wrong key":     SignPreview([]byte("another-key-another-key-another!"), "sub-1", digestWeek),
+		"empty subject": SignPreview(key, "", digestWeek),
+		"trailing LF":   good + "\n",
+	} {
+		if _, _, ok := VerifyPreview(key, tok); ok {
+			t.Errorf("%s verified", name)
+		}
+	}
+}

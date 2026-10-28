@@ -271,7 +271,7 @@ func TestWebDigestRecordsNothing(t *testing.T) {
 	conn := storetest.Conn(t, st)
 	count := func() string {
 		var out []string
-		for _, tb := range []string{"unsubscribes", "sends", "shown", "matrix_members", "dm_sends", "bot_state", "web_digests"} {
+		for _, tb := range []string{"unsubscribes", "sends", "shown", "matrix_members", "dm_sends", "bot_state", "web_digests", "preview_digests"} {
 			var n int
 			if err := conn.QueryRow(context.Background(), "SELECT count(*) FROM "+tb).Scan(&n); err != nil {
 				t.Fatal(err)
@@ -319,4 +319,48 @@ func TestWebDigestSignedBadDate(t *testing.T) {
 			t.Errorf("%s: Cache-Control %q", date, got)
 		}
 	}
+}
+
+func savePreview(t *testing.T, st *store.Store, subject string, expires time.Time) {
+	t.Helper()
+	d := digest.Digest{
+		Stats:    digest.Stats{NewThreads: 2},
+		Featured: &digest.Featured{Item: digest.Item{Key: digest.Key{Kind: digest.KindEntry, ID: 2}, Title: "kettles", URL: "https://talk.example.org/t/2", Magazine: digest.Magazine{Name: "coffee"}}},
+	}
+	b, err := json.Marshal(d)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := st.SavePreview(context.Background(), subject, week, b, expires); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// A preview link opens the stored preview, not the week's digest, until the
+// preview expires; the week's link still opens the week's digest.
+func TestPreviewPage(t *testing.T) {
+	st := storetest.New(t)
+	saveDigest(t, st, "sub-1")
+	expires := week.Add(30 * time.Hour)
+	savePreview(t, st, "sub-1", expires)
+	h := webServer(st, week.Add(24*time.Hour))
+	rec := do(h, "GET", "/d/"+token.SignPreview(key, "sub-1", week), "")
+	if rec.Code != 200 || !strings.Contains(rec.Body.String(), "kettles") || strings.Contains(rec.Body.String(), "grinders") {
+		t.Fatalf("preview = %d %q", rec.Code, rec.Body.String())
+	}
+	if rec.Header().Get("X-Robots-Tag") != "noindex" || rec.Header().Get("Cache-Control") != "private, no-store" {
+		t.Fatalf("headers %v", rec.Header())
+	}
+	if rec := do(h, "HEAD", "/d/"+token.SignPreview(key, "sub-1", week), ""); rec.Code != 200 || rec.Body.Len() != 0 {
+		t.Fatalf("HEAD = %d", rec.Code)
+	}
+	rec = do(h, "GET", "/d/"+token.SignDigest(key, "sub-1", week), "")
+	if rec.Code != 200 || !strings.Contains(rec.Body.String(), "grinders") || strings.Contains(rec.Body.String(), "kettles") {
+		t.Fatalf("week = %d", rec.Code)
+	}
+	wantBody(t, do(webServer(st, expires), "GET", "/d/"+token.SignPreview(key, "sub-1", week), ""), 404, badBody)
+	// A preview token for a member with no preview finds nothing, even
+	// though their week's digest is stored.
+	saveDigest(t, st, "sub-2")
+	wantBody(t, do(h, "GET", "/d/"+token.SignPreview(key, "sub-2", week), ""), 404, badBody)
 }
