@@ -52,6 +52,10 @@ type Runner struct {
 	MatrixPending func() bool
 	// Now is the clock the Matrix half reads; nil is time.Now.
 	Now func() time.Time
+	// Only, when set, limits a run to the member with that Mbin username,
+	// so a test send mails one person. Nobody else is claimed, so a later
+	// full run for the same week still reaches them.
+	Only string
 }
 
 func (r *Runner) now() time.Time {
@@ -116,6 +120,14 @@ func (r *Runner) week(ctx context.Context, week time.Time) (*matrixHalf, error) 
 	members, err := r.Source.Members(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("read members: %w", err)
+	}
+	if r.Only != "" {
+		members = only(members, r.Only)
+		if len(members) == 0 {
+			// No username in the message: the operator typed it, and the
+			// error reaches the log.
+			return nil, errors.New("no member with that username gets the digest")
+		}
 	}
 	items, err := r.Source.Hot(ctx, from, week)
 	if err != nil {
@@ -247,6 +259,17 @@ func (r *Runner) emailPass(ctx context.Context, members []digest.Member, from, w
 	slog.Info("digest run", "week", week.Format("2006-01-02"), "sent", n.sent, "empty", n.empty,
 		"unsubscribed", n.unsubscribed, "failed", n.failed, "unclaimed", n.unclaimed, "skipped", n.skipped)
 	return matrixOn, firstErr
+}
+
+// only is the members whose username is exactly username.
+func only(members []digest.Member, username string) []digest.Member {
+	var out []digest.Member
+	for _, m := range members {
+		if m.Username == username {
+			out = append(out, m)
+		}
+	}
+	return out
 }
 
 // one builds the member's digest when it will be used and, when claimed is

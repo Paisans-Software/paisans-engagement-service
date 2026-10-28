@@ -697,3 +697,68 @@ func (s *syncWriter) Write(p []byte) (int, error) {
 	defer s.mu.Unlock()
 	return s.w.Write(p)
 }
+
+// A run limited to one member claims and mails only them, so a later full run
+// for the same week still reaches everyone else, and the limited member once.
+func TestWeekOnlyOneMember(t *testing.T) {
+	s := storetest.New(t)
+	rec := &mailtest.Recorder{}
+	r := runner(s, newSource(), rec)
+	r.Only = "two"
+	if err := r.Week(context.Background(), week); err != nil {
+		t.Fatal(err)
+	}
+	if n := countTo(rec.Messages); len(rec.Messages) != 1 || n["two@example.org"] != 1 {
+		t.Fatalf("limited run, messages by recipient: %v", n)
+	}
+	if got := statuses(t, s); len(got) != 1 || got["sub-2"] != string(store.StatusSent) {
+		t.Fatalf("limited run claimed %v", got)
+	}
+	r.Only = ""
+	if err := r.Week(context.Background(), week); err != nil {
+		t.Fatal(err)
+	}
+	n := countTo(rec.Messages)
+	if len(rec.Messages) != 3 || n["one@example.org"] != 1 || n["two@example.org"] != 1 || n["three@example.org"] != 1 {
+		t.Fatalf("after the full run, messages by recipient: %v", n)
+	}
+}
+
+// A run limited to a username no member has claims nobody and fails, so a
+// typo is not mistaken for a member with nothing to read.
+func TestWeekOnlyUnknownMember(t *testing.T) {
+	s := storetest.New(t)
+	rec := &mailtest.Recorder{}
+	src := newSource()
+	r := runner(s, src, rec)
+	r.Only = "nobody"
+	if err := r.Week(context.Background(), week); err == nil {
+		t.Fatal("no error for an unknown member")
+	}
+	if got := statuses(t, s); len(got) != 0 || len(rec.Messages) != 0 {
+		t.Fatalf("claimed %v, sent %d", got, len(rec.Messages))
+	}
+	if src.hots.Load() != 0 {
+		t.Fatal("read the week's threads for an unknown member")
+	}
+}
+
+// The next week is a week of its own, so a member sent this week is sent
+// again by the next Monday's run.
+func TestNextWeekSendsAgain(t *testing.T) {
+	s := storetest.New(t)
+	rec := &mailtest.Recorder{}
+	src := newSource()
+	src.members = src.members[:1]
+	r := runner(s, src, rec)
+	if err := r.Week(context.Background(), week); err != nil {
+		t.Fatal(err)
+	}
+	ok, err := s.Claim(context.Background(), "sub-1", week.AddDate(0, 0, 7))
+	if err != nil || !ok {
+		t.Fatalf("claim the next week: %v, %v", ok, err)
+	}
+	if len(rec.Messages) != 1 {
+		t.Fatalf("sent %d", len(rec.Messages))
+	}
+}

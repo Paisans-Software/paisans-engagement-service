@@ -19,6 +19,12 @@ All notable changes to this project are documented here, in the
 - Federated threads from a magazine followed only by members without a verified address are now among the week's candidates.
 - The digest email's HTML has a head with a title.
 
+## [0.1.1] - 2026-10-27
+
+### Added
+
+- A `send` command that sends this week's digest now, to everyone or with `--member` to one member, skipping whoever the week already reached.
+
 ## [0.1.0] - 2026-10-24
 
 ### Added

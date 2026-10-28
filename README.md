@@ -54,6 +54,22 @@ Each sent digest can be read at `/d/{token}` on the engagement hostname, with no
 
 The token names the member and the week and is signed with `ENGAGEMENT_SIGNING_KEY`, with a purpose that differs from the unsubscribe token, so neither is accepted as the other. The digest expires 28 days after it was sent, and the stored copy is deleted then. Only `GET` and `HEAD` are answered, and opening a digest records nothing. The page carries `Referrer-Policy: no-referrer`, `X-Robots-Tag: noindex` and `Cache-Control: private, no-store`. A token that is bad, unknown or expired gets the same 404 and the same body as a bad unsubscribe link.
 
+## Sending by hand
+
+`send` runs one digest now, by email only and not as a Matrix message, and exits, for a test or for a Monday the service missed. It covers the week that ended at the latest Monday 08:00 in the container's local time, on whatever day it runs, and starts no server and no schedule. From the app's directory on a host that runs it:
+
+```sh
+docker compose exec app /paisans-engagement-service send --member <username>
+docker compose exec app /paisans-engagement-service send
+```
+
+The image has no shell, so `exec` names the binary. `docker compose run --rm app send --member <username>` works too, in a container of its own, since the binary is the image's entrypoint.
+
+* **Never twice.** `send` claims each member for the week exactly as the schedule does, so a member the schedule or an earlier `send` already reached that week is skipped. The next Monday is a new week and sends as usual.
+* **One member.** `--member` takes an Mbin username and sends to that member alone. Nobody else is claimed, so a later `send` without it still reaches the rest of the community for the same week. A username that gets no digest is refused and nothing is sent.
+* **The schedule does not catch up.** The schedule sends only on the Monday itself, so after a test with `--member` on a later day the rest of that week goes out only if `send` is run again without it.
+* **Exit status.** `send` logs the same summary line as a scheduled run and exits 0, or logs the error and exits 1. Without `ENGAGEMENT_SMTP_HOST` it refuses before reading anything. A member whose digest the relay never accepted is left unclaimed and the exit is 1, so running `send` again reaches them.
+
 ## Mbin must be clustered
 
 The service reads Mbin only when Mbin has `placement: cluster` in Paisans. Its read only database role is created in the cluster's Postgres, where Paisans already creates each clustered app's role, and the service reaches it through the site's HAProxy. A pinned Mbin keeps its database on its own compose network with only the role its image created, so the toolkit refuses a deployment that points the engagement blueprint at a pinned Mbin with its `engagement-source-not-clustered` check. Cluster Mbin before enabling the blueprint.
