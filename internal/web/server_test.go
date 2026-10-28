@@ -1,12 +1,22 @@
 package web
 
 import (
+	"bytes"
 	"context"
+	"crypto/hmac"
+	"crypto/sha256"
+	"encoding/base64"
+	"encoding/json"
+	"fmt"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/paisans-software/paisans-engagement-service/internal/digest"
+	"github.com/paisans-software/paisans-engagement-service/internal/mail"
 	"github.com/paisans-software/paisans-engagement-service/internal/store"
 	"github.com/paisans-software/paisans-engagement-service/internal/store/storetest"
 	"github.com/paisans-software/paisans-engagement-service/internal/token"
@@ -44,11 +54,11 @@ func wantBody(t *testing.T, rec *httptest.ResponseRecorder, code int, body strin
 }
 
 const okBody = "You're unsubscribed from the weekly digest."
-const badBody = "This unsubscribe link is not valid."
+const badBody = "This link is not valid."
 
 func TestUnsubscribeGet(t *testing.T) {
 	st := storetest.New(t)
-	h := NewServer(st, key)
+	h := NewServer(Options{Store: st, Key: key})
 	rec := do(h, "GET", "/u/"+token.Sign(key, "sub-1"), "")
 	wantBody(t, rec, 200, okBody)
 	if !unsubscribed(t, st, "sub-1") {
@@ -63,7 +73,7 @@ func TestUnsubscribeGet(t *testing.T) {
 
 func TestUnsubscribePost(t *testing.T) {
 	st := storetest.New(t)
-	h := NewServer(st, key)
+	h := NewServer(Options{Store: st, Key: key})
 	wantBody(t, do(h, "POST", "/u/"+token.Sign(key, "sub-2"), "List-Unsubscribe=One-Click"), 200, okBody)
 	if !unsubscribed(t, st, "sub-2") {
 		t.Fatal("sub-2 is not unsubscribed")
@@ -74,7 +84,7 @@ func TestUnsubscribePost(t *testing.T) {
 
 func TestBadTokenIs404(t *testing.T) {
 	st := storetest.New(t)
-	h := NewServer(st, key)
+	h := NewServer(Options{Store: st, Key: key})
 	other := token.Sign([]byte("another key another key another!"), "sub-3")
 	for _, tok := range []string{"garbage", other, token.Sign(key, ""), "a.b"} {
 		for _, m := range []string{"GET", "POST"} {
@@ -87,7 +97,7 @@ func TestBadTokenIs404(t *testing.T) {
 }
 
 func TestOtherPathsAre404(t *testing.T) {
-	h := NewServer(storetest.New(t), key)
+	h := NewServer(Options{Store: storetest.New(t), Key: key})
 	for _, c := range []struct{ method, path string }{
 		{"GET", "/"}, {"GET", "/u/"}, {"GET", "/admin"}, {"GET", "/u/a/b"}, {"POST", "/healthz"},
 	} {
@@ -101,7 +111,7 @@ func TestOtherPathsAre404(t *testing.T) {
 // nothing, as if the route were not there.
 func TestOtherMethodsAre404(t *testing.T) {
 	st := storetest.New(t)
-	h := NewServer(st, key)
+	h := NewServer(Options{Store: st, Key: key})
 	for _, m := range []string{"PUT", "DELETE", "PATCH", "OPTIONS"} {
 		wantBody(t, do(h, m, "/u/"+token.Sign(key, "sub-5"), ""), 404, badBody)
 	}
@@ -113,7 +123,7 @@ func TestOtherMethodsAre404(t *testing.T) {
 // Link checkers and mail scanners send HEAD; it must not unsubscribe.
 func TestHeadDoesNotUnsubscribe(t *testing.T) {
 	st := storetest.New(t)
-	h := NewServer(st, key)
+	h := NewServer(Options{Store: st, Key: key})
 	rec := do(h, "HEAD", "/u/"+token.Sign(key, "sub-4"), "")
 	wantBody(t, rec, 200, "")
 	if unsubscribed(t, st, "sub-4") {
@@ -124,7 +134,7 @@ func TestHeadDoesNotUnsubscribe(t *testing.T) {
 
 func TestHealthz(t *testing.T) {
 	st := storetest.New(t)
-	h := NewServer(st, key)
+	h := NewServer(Options{Store: st, Key: key})
 	rec := do(h, "GET", "/healthz", "")
 	if rec.Code != 200 || rec.Body.String() != "ok" {
 		t.Fatalf("healthz = %d %q", rec.Code, rec.Body.String())
@@ -132,5 +142,181 @@ func TestHealthz(t *testing.T) {
 	st.Close()
 	if rec := do(h, "GET", "/healthz", ""); rec.Code != 503 {
 		t.Fatalf("healthz with the database closed = %d, want 503", rec.Code)
+	}
+}
+
+var week = time.Date(2026, 10, 19, 0, 0, 0, 0, time.Local)
+
+func saveDigest(t *testing.T, st *store.Store, subject string) {
+	t.Helper()
+	d := digest.Digest{
+		Stats:    digest.Stats{NewThreads: 2},
+		Featured: &digest.Featured{Item: digest.Item{Key: digest.Key{Kind: digest.KindEntry, ID: 1}, Title: "grinders", URL: "https://talk.example.org/t/1", Magazine: digest.Magazine{Name: "coffee"}}},
+	}
+	b, err := json.Marshal(d)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.SaveDigest(context.Background(), subject, week, b); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func webServer(st *store.Store, now time.Time) http.Handler {
+	return NewServer(Options{
+		Store: st, Key: key, Names: mail.Names{Instance: "Talk", Meta: "Talk Community"},
+		SiteURL: "https://talk.example.org/", Now: func() time.Time { return now },
+	})
+}
+
+func TestWebDigest(t *testing.T) {
+	st := storetest.New(t)
+	saveDigest(t, st, "sub-1")
+	h := webServer(st, week.Add(24*time.Hour))
+	rec := do(h, "GET", "/d/"+token.SignDigest(key, "sub-1", week), "")
+	if rec.Code != 200 {
+		t.Fatalf("status = %d", rec.Code)
+	}
+	body := rec.Body.String()
+	for _, want := range []string{"grinders", "See everything on Talk", "Oct 12 – Oct 18"} {
+		if !strings.Contains(body, want) {
+			t.Errorf("body lacks %q", want)
+		}
+	}
+	if strings.Contains(body, "/u/") || strings.Contains(body, "Unsubscribe") {
+		t.Error("page has an unsubscribe link")
+	}
+	for k, v := range map[string]string{
+		"Referrer-Policy": "no-referrer", "X-Robots-Tag": "noindex", "Cache-Control": "private, no-store",
+		"Content-Type": "text/html; charset=utf-8",
+	} {
+		if got := rec.Header().Values(k); len(got) != 1 || got[0] != v {
+			t.Errorf("%s = %q, want %q", k, got, v)
+		}
+	}
+}
+
+func TestWebDigestHead(t *testing.T) {
+	st := storetest.New(t)
+	saveDigest(t, st, "sub-1")
+	h := webServer(st, week.Add(24*time.Hour))
+	rec := do(h, "HEAD", "/d/"+token.SignDigest(key, "sub-1", week), "")
+	if rec.Code != 200 || rec.Body.Len() != 0 {
+		t.Fatalf("HEAD = %d with %d body bytes", rec.Code, rec.Body.Len())
+	}
+	if rec.Header().Get("Cache-Control") != "private, no-store" || rec.Header().Get("X-Robots-Tag") != "noindex" {
+		t.Fatalf("headers %v", rec.Header())
+	}
+	if rec := do(h, "HEAD", "/d/garbage", ""); rec.Code != 404 || rec.Body.Len() != 0 {
+		t.Fatalf("bad HEAD = %d", rec.Code)
+	}
+}
+
+func TestWebDigestBadTokens(t *testing.T) {
+	st := storetest.New(t)
+	saveDigest(t, st, "sub-1")
+	good := token.SignDigest(key, "sub-1", week)
+	payload, mac, _ := strings.Cut(good, ".")
+	otherSubject := token.SignDigest(key, "sub-2", week)
+	_, otherMAC, _ := strings.Cut(otherSubject, ".")
+	tokens := map[string]string{
+		"altered":       payload + "." + mac[:len(mac)-2] + "AA",
+		"other subject": payload + "." + otherMAC,
+		"unsubscribe":   token.Sign(key, "sub-1"),
+		"unknown week":  token.SignDigest(key, "sub-1", week.AddDate(0, 0, -7)),
+		"garbage":       "garbage",
+	}
+	h := webServer(st, week.Add(24*time.Hour))
+	want := do(h, "GET", "/u/garbage", "")
+	if want.Body.String() != badBody {
+		t.Fatalf("bad /u/ body %q", want.Body.String())
+	}
+	for name, tok := range tokens {
+		rec := do(h, "GET", "/d/"+tok, "")
+		wantBody(t, rec, 404, badBody)
+		if rec.Header().Get("Content-Type") != want.Header().Get("Content-Type") {
+			t.Errorf("%s: content type differs from /u/", name)
+		}
+	}
+	// Expired: four weeks after the send time, by the calendar.
+	late := webServer(st, store.DigestExpiry(week))
+	wantBody(t, do(late, "GET", "/d/"+good, ""), 404, badBody)
+	// Just before expiry it still reads.
+	if rec := do(webServer(st, store.DigestExpiry(week).Add(-time.Second)), "GET", "/d/"+good, ""); rec.Code != 200 {
+		t.Fatalf("before expiry = %d", rec.Code)
+	}
+}
+
+func TestWebDigestStoreError(t *testing.T) {
+	var logged bytes.Buffer
+	prev := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&logged, nil)))
+	t.Cleanup(func() { slog.SetDefault(prev) })
+	st := storetest.New(t)
+	h := webServer(st, week.Add(time.Hour))
+	tok := token.SignDigest(key, "sub-1", week)
+	st.Close()
+	rec := do(h, "GET", "/d/"+tok, "")
+	if rec.Code != 500 || strings.Contains(rec.Body.String(), "sub-1") || rec.Body.Len() == 0 {
+		t.Fatalf("store error = %d %q", rec.Code, rec.Body.String())
+	}
+	if strings.Contains(logged.String(), "sub-1") || !strings.Contains(logged.String(), "reading a web digest failed") {
+		t.Fatalf("log = %q", logged.String())
+	}
+}
+
+func TestWebDigestRecordsNothing(t *testing.T) {
+	st := storetest.New(t)
+	saveDigest(t, st, "sub-1")
+	conn := storetest.Conn(t, st)
+	count := func() string {
+		var out []string
+		for _, tb := range []string{"unsubscribes", "sends", "shown", "matrix_members", "dm_sends", "bot_state", "web_digests"} {
+			var n int
+			if err := conn.QueryRow(context.Background(), "SELECT count(*) FROM "+tb).Scan(&n); err != nil {
+				t.Fatal(err)
+			}
+			out = append(out, tb+"="+fmt.Sprint(n))
+		}
+		return strings.Join(out, ",")
+	}
+	before := count()
+	h := webServer(st, week.Add(time.Hour))
+	tok := token.SignDigest(key, "sub-1", week)
+	for _, m := range []string{"GET", "HEAD"} {
+		do(h, m, "/d/"+tok, "")
+	}
+	if after := count(); after != before {
+		t.Fatalf("rows changed: %s -> %s", before, after)
+	}
+}
+
+func TestWebDigestOtherMethods(t *testing.T) {
+	st := storetest.New(t)
+	saveDigest(t, st, "sub-1")
+	h := webServer(st, week.Add(time.Hour))
+	for _, m := range []string{"POST", "PUT", "DELETE"} {
+		wantBody(t, do(h, m, "/d/"+token.SignDigest(key, "sub-1", week), ""), 404, badBody)
+	}
+}
+
+// A correctly signed token whose date is not a calendar day gets the same
+// 404 as any bad link, and the digest headers once.
+func TestWebDigestSignedBadDate(t *testing.T) {
+	st := storetest.New(t)
+	saveDigest(t, st, "sub-1")
+	for _, date := range []string{"2026-02-30", "2026-10-26x", "26-10-2026"} {
+		m := hmac.New(sha256.New, key)
+		m.Write([]byte("digest\x00sub-1\x00" + date))
+		tok := base64.RawURLEncoding.EncodeToString([]byte("sub-1\x00"+date)) + "." +
+			base64.RawURLEncoding.EncodeToString(m.Sum(nil))
+		rec := do(webServer(st, week.Add(time.Hour)), "GET", "/d/"+tok, "")
+		wantBody(t, rec, 404, badBody)
+		if got := rec.Header().Values("X-Robots-Tag"); len(got) != 1 || got[0] != "noindex" {
+			t.Errorf("%s: X-Robots-Tag %q", date, got)
+		}
+		if got := rec.Header().Values("Cache-Control"); len(got) != 1 || got[0] != "private, no-store" {
+			t.Errorf("%s: Cache-Control %q", date, got)
+		}
 	}
 }

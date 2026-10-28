@@ -5,6 +5,7 @@ go 1.25.8
 require (
 	github.com/jackc/pgx/v5 v5.11.0
 	github.com/wneessen/go-mail v0.8.1
+	golang.org/x/time v0.15.0
 )
 
 require (

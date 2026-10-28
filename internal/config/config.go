@@ -6,6 +6,7 @@ import (
 	"encoding/base64"
 	"errors"
 	"fmt"
+	"regexp"
 	"strconv"
 	"strings"
 )
@@ -22,6 +23,56 @@ type SMTP struct {
 	TLS      string
 }
 
+// Matrix configures the Digest Bot. The bot runs only when all seven
+// variables are set; with fewer, the service behaves as it does without Matrix.
+type Matrix struct {
+	// URL is the homeserver's public address; ServerName is the part after
+	// the colon in Matrix ids.
+	URL, ServerName string
+	// MASAdminURL is the Matrix Authentication Service's admin listener;
+	// ClientID and ClientSecret are the service's client there.
+	MASAdminURL, ClientID, ClientSecret string
+	// UpstreamProvider is the id of the identity provider members sign in
+	// with; BotLocalpart is the bot's Matrix user name.
+	UpstreamProvider, BotLocalpart string
+}
+
+// variable is an environment variable's name and value.
+type variable struct{ name, value string }
+
+// vars pairs each variable with the field it fills, in the order Missing
+// reports them.
+func (m Matrix) vars() []variable {
+	return []variable{
+		{"ENGAGEMENT_MATRIX_URL", m.URL},
+		{"ENGAGEMENT_MATRIX_SERVER_NAME", m.ServerName},
+		{"ENGAGEMENT_MAS_ADMIN_URL", m.MASAdminURL},
+		{"ENGAGEMENT_MAS_CLIENT_ID", m.ClientID},
+		{"ENGAGEMENT_MAS_CLIENT_SECRET", m.ClientSecret},
+		{"ENGAGEMENT_MAS_UPSTREAM_PROVIDER", m.UpstreamProvider},
+		{"ENGAGEMENT_MATRIX_BOT_LOCALPART", m.BotLocalpart},
+	}
+}
+
+// Enabled reports whether all seven variables are set.
+func (m Matrix) Enabled() bool { return len(m.Missing()) == 0 }
+
+// Missing names the unset variables.
+func (m Matrix) Missing() []string {
+	var out []string
+	for _, v := range m.vars() {
+		if v.value == "" {
+			out = append(out, v.name)
+		}
+	}
+	return out
+}
+
+var (
+	localpartRE = regexp.MustCompile(`^[a-z0-9._=/-]+$`)
+	ulidRE      = regexp.MustCompile(`^[0-9A-HJKMNP-TV-Z]{26}$`)
+)
+
 type Config struct {
 	ListenAddr string
 	// PublicURL is where members reach the unsubscribe page.
@@ -36,6 +87,7 @@ type Config struct {
 	InstanceTitle, MetaTitle string
 	SigningKey               []byte
 	SMTP                     SMTP
+	Matrix                   Matrix
 }
 
 func Load(getenv func(string) string) (Config, error) {
@@ -88,6 +140,13 @@ func Load(getenv func(string) string) (Config, error) {
 			FromName: getenv("ENGAGEMENT_SMTP_FROM_NAME"), TLS: opt("ENGAGEMENT_SMTP_TLS", "starttls"),
 		},
 	}
+	c.Matrix = Matrix{
+		URL: getenv("ENGAGEMENT_MATRIX_URL"), ServerName: getenv("ENGAGEMENT_MATRIX_SERVER_NAME"),
+		MASAdminURL: getenv("ENGAGEMENT_MAS_ADMIN_URL"), ClientID: getenv("ENGAGEMENT_MAS_CLIENT_ID"),
+		ClientSecret:     getenv("ENGAGEMENT_MAS_CLIENT_SECRET"),
+		UpstreamProvider: getenv("ENGAGEMENT_MAS_UPSTREAM_PROVIDER"),
+		BotLocalpart:     getenv("ENGAGEMENT_MATRIX_BOT_LOCALPART"),
+	}
 	// Without a mail host nothing is sent, so a sender address is only
 	// needed once there is one.
 	if c.SMTP.Host != "" {
@@ -97,25 +156,43 @@ func Load(getenv func(string) string) (Config, error) {
 	}
 	// These reach mail headers and links, where a line break would let the
 	// value start a header of its own.
-	for _, v := range []struct{ name, value string }{
+	errs = append(errs, oneLine([]variable{
 		{"ENGAGEMENT_META_TITLE", c.MetaTitle},
 		{"ENGAGEMENT_INSTANCE_TITLE", c.InstanceTitle},
 		{"ENGAGEMENT_PUBLIC_URL", c.PublicURL},
 		{"ENGAGEMENT_MBIN_URL", c.MbinURL},
-	} {
-		if strings.ContainsAny(v.value, "\r\n") {
-			errs = append(errs, fmt.Errorf("%s must be one line", v.name))
-		}
-	}
+	})...)
 	switch c.SMTP.TLS {
 	case "none", "starttls", "tls":
 	default:
 		errs = append(errs, errors.New("ENGAGEMENT_SMTP_TLS must be none, starttls or tls"))
 	}
-	for _, u := range []struct{ name, value string }{
+	errs = append(errs, baseURLs([]variable{
 		{"ENGAGEMENT_PUBLIC_URL", c.PublicURL},
 		{"ENGAGEMENT_MBIN_URL", c.MbinURL},
-	} {
+	})...)
+	if c.Matrix.Enabled() {
+		errs = append(errs, c.Matrix.validate()...)
+	}
+	return c, errors.Join(errs...)
+}
+
+// oneLine refuses a value with a line break.
+func oneLine(vs []variable) []error {
+	var errs []error
+	for _, v := range vs {
+		if strings.ContainsAny(v.value, "\r\n") {
+			errs = append(errs, fmt.Errorf("%s must be one line", v.name))
+		}
+	}
+	return errs
+}
+
+// baseURLs refuses a value that is not an http or https URL without a
+// trailing slash. An empty value is left to the check that requires it.
+func baseURLs(vs []variable) []error {
+	var errs []error
+	for _, u := range vs {
 		if u.value == "" {
 			continue
 		}
@@ -126,5 +203,25 @@ func Load(getenv func(string) string) (Config, error) {
 			errs = append(errs, fmt.Errorf("%s must not end in /", u.name))
 		}
 	}
-	return c, errors.Join(errs...)
+	return errs
+}
+
+func (m Matrix) validate() []error {
+	errs := oneLine(m.vars())
+	errs = append(errs, baseURLs([]variable{
+		{"ENGAGEMENT_MATRIX_URL", m.URL},
+		{"ENGAGEMENT_MAS_ADMIN_URL", m.MASAdminURL},
+	})...)
+	if !localpartRE.MatchString(m.BotLocalpart) {
+		errs = append(errs, errors.New("ENGAGEMENT_MATRIX_BOT_LOCALPART must be lower case letters, digits and . _ = / -"))
+	}
+	for _, id := range []variable{
+		{"ENGAGEMENT_MAS_CLIENT_ID", m.ClientID},
+		{"ENGAGEMENT_MAS_UPSTREAM_PROVIDER", m.UpstreamProvider},
+	} {
+		if !ulidRE.MatchString(id.value) {
+			errs = append(errs, fmt.Errorf("%s must be a 26 character upper case ULID", id.name))
+		}
+	}
+	return errs
 }

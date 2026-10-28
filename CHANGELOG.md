@@ -7,11 +7,19 @@ All notable changes to this project are documented here, in the
 
 ### Added
 
+- A Monday Matrix message from a Digest Bot account, with the week's first three threads and a link, for every member with a linked Matrix account on the deployment's homeserver.
+- Members stop the messages by replying stop or leaving the room, and start them again by replying start, resume or restore, or by inviting the bot.
+- Each sent digest can be read for four weeks at a signed /d/ link.
 - A `--preview` option for `send --member` that mails the member the digest a brand-new member would get this week, without claiming them for the week.
 - A section in the digest offering each member up to three of the week's new threads and microblog posts that nobody has answered yet.
 
 ### Changed
 
+- Unsubscribing from the email forgets which threads a member was shown only when their Matrix messages are off too.
+- A bad unsubscribe link answers "This link is not valid."
+- The new members figure counts members without a verified email address too.
+- Federated threads from a magazine followed only by members without a verified address are now among the week's candidates.
+- The digest email's HTML has a head with a title.
 - Every thread in the digest shows only its title and magazine, with no counts, featured label or microblog label. A microblog post is quoted instead of titled.
 - The digest email's subject and heading read "This week on" the community rather than "Your week on".
 

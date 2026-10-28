@@ -3,6 +3,7 @@ package run_test
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -110,6 +111,7 @@ func runner(s *store.Store, src run.Source, snd mail.Sender) *run.Runner {
 		Store: s, Source: src, Sender: snd,
 		Names:   mail.Names{Instance: "Talk", Meta: "Talk · Example Community"},
 		SiteURL: "https://talk.example.org/", PublicURL: "https://digest.example.org", Key: key,
+		Matrix: nil,
 	}
 }
 
@@ -203,7 +205,7 @@ func TestTwoRunnersOneStore(t *testing.T) {
 
 func TestUnsubscribedGetsNothing(t *testing.T) {
 	s := storetest.New(t)
-	if err := s.Unsubscribe(context.Background(), "sub-2"); err != nil {
+	if err := s.Unsubscribe(context.Background(), "sub-2", false); err != nil {
 		t.Fatal(err)
 	}
 	rec := &mailtest.Recorder{}
@@ -648,6 +650,68 @@ func TestShownThreadReturnsOnlyWithNewComments(t *testing.T) {
 	}
 }
 
+// Loop deletes web digests whose four weeks are over.
+func TestLoopPurgesExpired(t *testing.T) {
+	s := storetest.New(t)
+	at := week.Add(-time.Hour) // Sunday, so no week is due
+	old := at.AddDate(0, 0, -29)
+	if _, err := s.SaveDigest(context.Background(), "sub-1", old, []byte(`{}`)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.SaveDigest(context.Background(), "sub-1", week.AddDate(0, 0, -7), []byte(`{}`)); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	defer func() { cancel(); <-done }()
+	c := newClock(at)
+	go func() {
+		run.Loop(ctx, runner(s, newSource(), &mailtest.Recorder{}), c.now, time.Millisecond)
+		close(done)
+	}()
+	c.waitTicks(t, 2)
+	if _, ok, err := s.SavedDigest(context.Background(), "sub-1", old); err != nil || ok {
+		t.Fatalf("expired digest still stored (%v, %v)", ok, err)
+	}
+	if _, ok, err := s.SavedDigest(context.Background(), "sub-1", week.AddDate(0, 0, -7)); err != nil || !ok {
+		t.Fatalf("current digest gone (%v, %v)", ok, err)
+	}
+}
+
+// A purge that deletes nothing logs nothing.
+func TestLoopPurgeQuietWhenNothingExpired(t *testing.T) {
+	var logs bytes.Buffer
+	prev := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&syncWriter{w: &logs}, nil)))
+	defer slog.SetDefault(prev)
+	s := storetest.New(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	c := newClock(week.Add(-time.Hour))
+	go func() {
+		run.Loop(ctx, runner(s, newSource(), &mailtest.Recorder{}), c.now, time.Millisecond)
+		close(done)
+	}()
+	c.waitTicks(t, 2)
+	cancel()
+	<-done
+	if strings.Contains(logs.String(), "expired web digests deleted") {
+		t.Fatalf("logs: %s", logs.String())
+	}
+}
+
+// syncWriter serialises writes from Loop's goroutine and the test.
+type syncWriter struct {
+	mu sync.Mutex
+	w  *bytes.Buffer
+}
+
+func (s *syncWriter) Write(p []byte) (int, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.w.Write(p)
+}
+
 // A run limited to one member claims and mails only them, so a later full run
 // for the same week still reaches everyone else, and the limited member once.
 func TestWeekOnlyOneMember(t *testing.T) {
@@ -756,12 +820,15 @@ func TestPreviewSendsABlankMembersDigest(t *testing.T) {
 	if got := statuses(t, s); len(got) != 0 {
 		t.Fatalf("preview claimed %v", got)
 	}
-	shown, err := s.Shown(ctx, "sub-1")
+	shown, err := s.Shown(ctx, "sub-1", week.AddDate(0, 0, 7))
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(shown) != 1 {
 		t.Fatalf("after the preview, shown is %v", shown)
+	}
+	if _, found, err := s.SavedDigest(ctx, "sub-1", week); err != nil || found {
+		t.Fatalf("after the preview, a digest is stored (%v, %v)", found, err)
 	}
 
 	src.viewErr = nil
@@ -779,7 +846,7 @@ func TestPreviewSendsABlankMembersDigest(t *testing.T) {
 // is not mistaken for a sent preview.
 func TestPreviewRefusesWithoutADigest(t *testing.T) {
 	s := storetest.New(t)
-	if err := s.Unsubscribe(context.Background(), "sub-3"); err != nil {
+	if err := s.Unsubscribe(context.Background(), "sub-3", false); err != nil {
 		t.Fatal(err)
 	}
 	// Federated content reaches only a member who follows its magazine, and
@@ -839,6 +906,24 @@ func TestWeekOffersUnanswered(t *testing.T) {
 	}
 	if n != 2 {
 		t.Fatalf("shown to %d members", n)
+	}
+	// The stored digest, which the web page shows, carries the same pick
+	// and heading as the email.
+	raw, ok, err := s.SavedDigest(context.Background(), "sub-1", week)
+	if err != nil || !ok {
+		t.Fatalf("stored digest: %v, %v", ok, err)
+	}
+	var d digest.Digest
+	if err := json.Unmarshal(raw, &d); err != nil {
+		t.Fatal(err)
+	}
+	if len(d.Unanswered) != 1 || d.Unanswered[0].Key != src.fresh[0].Key || d.UnansweredHeading == "" {
+		t.Fatalf("stored digest has unanswered %v under %q", d.Unanswered, d.UnansweredHeading)
+	}
+	for _, m := range rec.Messages {
+		if m.To == "one@example.org" && !strings.Contains(m.Text, "\n"+d.UnansweredHeading+"\n") {
+			t.Fatalf("the email's heading is not the stored %q:\n%s", d.UnansweredHeading, m.Text)
+		}
 	}
 }
 

@@ -322,6 +322,9 @@ func TestQueriesStayInsideAllowlist(t *testing.T) {
 	if _, err := s.Stats(ctx, from, to); err != nil {
 		t.Fatalf("Stats: %v", err)
 	}
+	if _, err := s.IsMember(ctx, "sub-1"); err != nil {
+		t.Fatalf("IsMember: %v", err)
+	}
 }
 
 func TestMembersRule(t *testing.T) {
@@ -341,9 +344,36 @@ func TestMembersRule(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := []digest.Member{{ID: 1, Subject: "sub-1", Email: "u1@example.org", Username: "u1"}}
+	// Users 3 and 8 are members who cannot be mailed: no verified address.
+	want := []digest.Member{
+		{ID: 1, Subject: "sub-1", Email: "u1@example.org", Username: "u1"},
+		{ID: 3, Subject: "sub-3", Email: "", Username: "u3"},
+		{ID: 8, Subject: "sub-8", Email: "", Username: "u8"},
+	}
 	if !slices.Equal(got, want) {
 		t.Fatalf("got %+v, want %+v", got, want)
+	}
+}
+
+func TestIsMember(t *testing.T) {
+	f := newFixture(t)
+	f.user(t, 1, nil)
+	f.user(t, 2, row{"is_verified": false})
+	f.user(t, 3, row{"email": nil})
+	f.user(t, 4, row{"is_banned": true})
+	s := f.source(t)
+	// A member needs no address to be one; the Matrix digest reaches them.
+	for _, c := range []struct {
+		subject string
+		want    bool
+	}{{"sub-1", true}, {"sub-2", true}, {"sub-3", true}, {"sub-4", false}, {"nobody", false}} {
+		got, err := s.IsMember(context.Background(), c.subject)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got != c.want {
+			t.Errorf("IsMember(%q) = %v, want %v", c.subject, got, c.want)
+		}
 	}
 }
 
@@ -411,11 +441,30 @@ func TestHotFederatedWithSubscriber(t *testing.T) {
 	}
 }
 
-// Only a member's subscription admits federated content: a local account
-// that is not one, here unverified, follows the magazine in vain.
-func TestHotFederatedWithIneligibleSubscriber(t *testing.T) {
+// A member without a verified address is a member, so their subscription
+// admits federated content too.
+func TestHotFederatedWithUnverifiedSubscriber(t *testing.T) {
 	f := newFixture(t)
 	f.user(t, 1, row{"is_verified": false})
+	f.user(t, 4, row{"ap_id": "https://remote.example.org/u/4"})
+	f.magazine(t, 15, row{"name": "far@remote.example.org", "ap_id": "https://remote.example.org/m/far"})
+	f.exec(t, `INSERT INTO magazine_subscription VALUES (1, 15)`)
+	f.entry(t, 9, 4, 15, row{"ap_id": "https://remote.example.org/t/9", "score": 5})
+
+	got, err := f.source(t).Hot(context.Background(), from, to)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 || got[0].Key != entryKey(9) {
+		t.Fatalf("got %v", keys(got))
+	}
+}
+
+// Only a member's subscription admits federated content: a local account
+// that is not one, here banned, follows the magazine in vain.
+func TestHotFederatedWithIneligibleSubscriber(t *testing.T) {
+	f := newFixture(t)
+	f.user(t, 1, row{"is_banned": true})
 	f.user(t, 4, row{"ap_id": "https://remote.example.org/u/4"})
 	f.magazine(t, 15, row{"name": "far@remote.example.org", "ap_id": "https://remote.example.org/m/far"})
 	f.exec(t, `INSERT INTO magazine_subscription VALUES (1, 15)`)
@@ -694,7 +743,7 @@ func TestStatsLocalOnly(t *testing.T) {
 	f.user(t, 1, nil)
 	f.user(t, 2, row{"created_at": mid})
 	f.user(t, 3, row{"created_at": mid, "ap_id": "https://remote.example.org/u/3"})
-	f.user(t, 4, row{"created_at": mid, "is_verified": false})
+	f.user(t, 4, row{"created_at": mid, "is_verified": false}) // a member, though not mailable
 	f.user(t, 5, row{"created_at": to})
 	f.magazine(t, 10, nil)
 	f.entry(t, 1, 1, 10, nil)
@@ -714,7 +763,7 @@ func TestStatsLocalOnly(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if want := (digest.Stats{NewThreads: 2, Comments: 2, NewMembers: 1}); got != want {
+	if want := (digest.Stats{NewThreads: 2, Comments: 2, NewMembers: 2}); got != want {
 		t.Fatalf("got %+v, want %+v", got, want)
 	}
 }

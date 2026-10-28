@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log/slog"
 	"sort"
+	"sync/atomic"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 )
@@ -18,7 +19,11 @@ var migrations embed.FS
 // two sites starting together do not both run the same migration.
 const migrateLock = 0x656e676167650001 // "engage\x00\x01"
 
-type Store struct{ pool *pgxpool.Pool }
+type Store struct {
+	pool *pgxpool.Pool
+	// lockPing, when not zero, replaces lockPingEvery.
+	lockPing atomic.Int64
+}
 
 func Open(ctx context.Context, url string) (*Store, error) {
 	pool, err := pgxpool.New(ctx, url)
