@@ -25,7 +25,7 @@ func item(id int64, title string) digest.Item {
 func sample() digest.Digest {
 	return digest.Digest{
 		Stats:    digest.Stats{NewThreads: 12, Comments: 148, NewMembers: 3},
-		Featured: &digest.Featured{Item: item(1, "grinders")},
+		Featured: &digest.Featured{Item: item(1, "grinders"), Excerpt: "hand grinders win"},
 		More:     []digest.Item{item(2, "garden"), item(3, "meetup")},
 	}
 }
@@ -72,8 +72,9 @@ func TestRenderDates(t *testing.T) {
 func TestRenderEscapes(t *testing.T) {
 	d := sample()
 	d.Featured.Item.Title = "<script>alert(1)</script>"
+	d.Featured.Excerpt = "<b>x</b>"
 	m := render(t, d)
-	if strings.Contains(m.HTML, "<script>") ||
+	if strings.Contains(m.HTML, "<script>") || strings.Contains(m.HTML, "<b>x</b>") ||
 		!strings.Contains(m.HTML, "&lt;script&gt;") {
 		t.Fatalf("not escaped: %s", m.HTML)
 	}
@@ -111,10 +112,14 @@ func TestRenderNoFeatured(t *testing.T) {
 	}
 }
 
-func TestRenderNoMore(t *testing.T) {
+func TestRenderNoExcerptNoMore(t *testing.T) {
 	d := sample()
+	d.Featured.Excerpt = ""
 	d.More = nil
 	m := render(t, d)
+	if strings.Contains(m.HTML, "&ldquo;") || strings.Contains(m.Text, `"`) {
+		t.Fatal("empty excerpt rendered")
+	}
 	if !strings.Contains(m.HTML, "new members") || !strings.Contains(m.Text, "3 new members") {
 		t.Fatal("stats row missing")
 	}
@@ -147,7 +152,7 @@ func TestRenderPostLabelled(t *testing.T) {
 
 // Every item, featured, listed or unanswered, a returning thread too, shows
 // its title, its magazine and, for a post, the microblog label, and nothing
-// it could be counted by.
+// it could be counted by. The featured thread quotes its excerpt after them.
 func TestRenderNoFigures(t *testing.T) {
 	d := sample()
 	d.Featured.Item.Again, d.Featured.Item.NewComments = true, 2
@@ -158,7 +163,7 @@ func TestRenderNoFigures(t *testing.T) {
 	m := render(t, d)
 	for name, part := range map[string]string{"text": m.Text, "html": m.HTML} {
 		body := part[strings.Index(part, "new members")+len("new members") : strings.Index(part, "See everything on")]
-		for _, bad := range []string{"comment", "vote", "joined in", "big one", "this week", "&ldquo;"} {
+		for _, bad := range []string{"comment", "vote", "joined in", "big one", "this week"} {
 			if strings.Contains(body, bad) {
 				t.Fatalf("%s: %q in:\n%s", name, bad, body)
 			}
@@ -167,11 +172,13 @@ func TestRenderNoFigures(t *testing.T) {
 			t.Fatalf("%s: magazines:\n%s", name, body)
 		}
 	}
-	if strings.Contains(m.Text, `"`) {
-		t.Fatalf("text part quotes:\n%s", m.Text)
-	}
-	if !strings.Contains(m.Text, "\n!coffee\ngrinders\nhttps://talk.example.org/m/coffee/t/grinders\n\ngarden\n") {
+	if !strings.Contains(m.Text, "new members\n\ngrinders\nhttps://talk.example.org/m/coffee/t/grinders\n!coffee\n\"hand grinders win\"\n\ngarden\n") {
 		t.Fatalf("text layout:\n%s", m.Text)
+	}
+	// In the HTML too, the featured thread's magazine comes after its title.
+	card := m.HTML[strings.Index(m.HTML, "#f4f7fb"):]
+	if strings.Index(card, "!coffee") < strings.Index(card, ">grinders</a>") {
+		t.Fatalf("magazine above the featured title:\n%s", card)
 	}
 }
 

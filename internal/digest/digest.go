@@ -33,6 +33,13 @@ type Magazine struct {
 	Name, Title string
 }
 
+// Comment is a local author's comment; federated comments are never loaded.
+type Comment struct {
+	AuthorID int64
+	Body     string
+	Votes    int
+}
+
 type Item struct {
 	Key                    Key
 	Title, URL             string
@@ -41,10 +48,13 @@ type Item struct {
 	Federated              bool
 	Comments, Participants int
 	Score                  int
-	// NewComments counts the comments posted this week.
+	TopComments            []Comment // highest voted first, at most 3, empty for federated
+	// NewComments counts the comments posted this week, and TopNew is the
+	// best of them, chosen as TopComments is.
 	NewComments int
+	TopNew      []Comment
 	// Again is set by Build on an item an earlier digest showed the member,
-	// which is ranked by this week's activity alone.
+	// which is ranked and quoted by this week's activity alone.
 	Again bool
 }
 
@@ -68,7 +78,8 @@ type View struct {
 type Stats struct{ NewThreads, Comments, NewMembers int }
 
 type Featured struct {
-	Item Item
+	Item    Item
+	Excerpt string
 }
 
 type Digest struct {
@@ -89,6 +100,7 @@ const (
 	maxMore       = 5
 	maxFederated  = 2
 	maxUnanswered = 3
+	excerptRunes  = 200
 )
 
 type ranked struct {
@@ -147,7 +159,7 @@ func Build(items []Item, v View, stats Stats) (Digest, bool) {
 	}
 	if featured >= 0 {
 		it := rs[featured].item
-		d.Featured = &Featured{Item: it}
+		d.Featured = &Featured{Item: it, Excerpt: excerpt(it, v)}
 	}
 	fedSeen := 0
 	for i, r := range rs {
@@ -229,6 +241,25 @@ func rank(it Item, v View) float64 {
 		return w * float64(2*it.NewComments+3*it.Participants)
 	}
 	return w * float64(it.Score+2*it.Comments+3*it.Participants)
+}
+
+func excerpt(it Item, v View) string {
+	if it.Federated {
+		return ""
+	}
+	comments := it.TopComments
+	if it.Again {
+		comments = it.TopNew
+	}
+	for _, c := range comments {
+		if v.BlockedUsers[c.AuthorID] {
+			continue
+		}
+		if e := Plain(c.Body, excerptRunes); e != "" {
+			return e
+		}
+	}
+	return ""
 }
 
 // A link's target may hold one level of parentheses, as Wikipedia's do.

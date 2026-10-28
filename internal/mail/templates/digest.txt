@@ -3,10 +3,11 @@ This week on {{.Meta}}
 
 {{.Stats.NewThreads}} new threads | {{.Stats.Comments}} comments | {{.Stats.NewMembers}} new members
 {{with .Featured}}
-{{.Magazine}}{{if .Label}} · {{.Label}}{{end}}
 {{.Title}}
 {{.URL}}
-{{end}}{{range .More}}
+{{.Magazine}}{{if .Label}} · {{.Label}}{{end}}
+{{if .Excerpt}}"{{.Excerpt}}"
+{{end}}{{end}}{{range .More}}
 {{.Title}}
 {{.URL}}
 {{.Magazine}}{{if .Label}} · {{.Label}}{{end}}

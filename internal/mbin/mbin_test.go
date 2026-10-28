@@ -406,6 +406,9 @@ func TestHotFederatedWithSubscriber(t *testing.T) {
 	if len(got) != 1 || got[0].Key != entryKey(9) || !got[0].Federated {
 		t.Fatalf("got %+v", got)
 	}
+	if got[0].TopComments != nil {
+		t.Errorf("federated item carries comments: %+v", got[0].TopComments)
+	}
 }
 
 // Only a member's subscription admits federated content: a local account
@@ -543,6 +546,39 @@ func TestHotCap(t *testing.T) {
 	}
 	if got[0].Key != entryKey(201) || got[199].Key != entryKey(2) {
 		t.Errorf("first %v, last %v", got[0].Key, got[199].Key)
+	}
+}
+
+func TestTopCommentsLocalOnly(t *testing.T) {
+	f := newFixture(t)
+	f.user(t, 1, nil)
+	f.user(t, 2, nil)
+	f.user(t, 4, row{"ap_id": "https://remote.example.org/u/4"})
+	f.magazine(t, 10, nil)
+	f.entry(t, 1, 1, 10, nil)
+	f.entryComment(t, 1, 2, 1, 10, row{"up_votes": 1, "body": "one"})
+	f.entryComment(t, 2, 2, 1, 10, row{"up_votes": 2, "favourite_count": 3, "body": "five"})
+	f.entryComment(t, 3, 4, 1, 10, row{"up_votes": 50, "body": "remote"})
+	f.entryComment(t, 4, 2, 1, 10, row{"up_votes": 40, "visibility": "trashed"})
+	f.entryComment(t, 5, 2, 1, 10, row{"up_votes": 30, "is_adult": true})
+	f.entryComment(t, 6, 1, 1, 10, row{"favourite_count": 3, "body": "three"})
+	f.entryComment(t, 7, 2, 1, 10, row{"body": "zero"})
+	f.post(t, 1, 1, 10, nil)
+	f.postComment(t, 1, 2, 1, 10, row{"up_votes": 2, "body": "reply"})
+
+	got, err := f.source(t).Hot(context.Background(), from, to)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("got %+v", got)
+	}
+	want := []digest.Comment{{AuthorID: 2, Body: "five", Votes: 5}, {AuthorID: 1, Body: "three", Votes: 3}, {AuthorID: 2, Body: "one", Votes: 1}}
+	if !slices.Equal(got[0].TopComments, want) {
+		t.Errorf("entry: got %+v, want %+v", got[0].TopComments, want)
+	}
+	if want := []digest.Comment{{AuthorID: 2, Body: "reply", Votes: 2}}; !slices.Equal(got[1].TopComments, want) {
+		t.Errorf("post: got %+v, want %+v", got[1].TopComments, want)
 	}
 }
 
@@ -695,9 +731,9 @@ func mapsEqual(a, b map[int64]bool) bool {
 	return true
 }
 
-// The week's comments leave out older and later ones, on local and federated
-// items alike.
-func TestHotNewCommentsThisWeekOnly(t *testing.T) {
+// The week's top comments leave out older ones however well liked, and a
+// federated item has none.
+func TestTopNewThisWeekOnly(t *testing.T) {
 	f := newFixture(t)
 	f.user(t, 1, nil)
 	f.user(t, 2, nil)
@@ -722,10 +758,13 @@ func TestHotNewCommentsThisWeekOnly(t *testing.T) {
 	if local.Key != entryKey(1) {
 		local, remote = remote, local
 	}
-	if local.NewComments != 1 {
+	if want := []digest.Comment{{AuthorID: 2, Body: "this week", Votes: 2}}; !slices.Equal(local.TopNew, want) {
+		t.Errorf("local: got %+v, want %+v", local.TopNew, want)
+	}
+	if len(local.TopComments) != 3 || local.NewComments != 1 {
 		t.Errorf("local: %+v", local)
 	}
-	if remote.NewComments != 1 {
+	if remote.TopNew != nil || remote.NewComments != 1 {
 		t.Errorf("remote: %+v", remote)
 	}
 }

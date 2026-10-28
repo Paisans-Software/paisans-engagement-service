@@ -181,6 +181,45 @@ func TestMoreAtMostFive(t *testing.T) {
 	}
 }
 
+func TestExcerptSkipsBlockedAuthor(t *testing.T) {
+	it := entry(1, 1, 1, 1, 1)
+	it.TopComments = []Comment{
+		{AuthorID: 50, Body: "blocked words", Votes: 9},
+		{AuthorID: 51, Body: "a **good** [point](https://example.org/x)\n\nhere", Votes: 3},
+	}
+	d, _ := Build([]Item{it}, View{BlockedUsers: map[int64]bool{50: true}}, Stats{})
+	if d.Featured.Excerpt != "a good point here" {
+		t.Fatalf("excerpt %q", d.Featured.Excerpt)
+	}
+}
+
+func TestExcerptOmittedWhenNone(t *testing.T) {
+	it := entry(1, 1, 1, 1, 1)
+	d, _ := Build([]Item{it}, View{}, Stats{})
+	if d.Featured.Excerpt != "" {
+		t.Fatalf("excerpt %q", d.Featured.Excerpt)
+	}
+	it.TopComments = []Comment{{AuthorID: 50, Body: "x"}}
+	d, _ = Build([]Item{it}, View{BlockedUsers: map[int64]bool{50: true}}, Stats{})
+	if d.Featured.Excerpt != "" {
+		t.Fatalf("excerpt %q", d.Featured.Excerpt)
+	}
+}
+
+// A top comment that is nothing once its markdown is gone, an image alone
+// say, gives way to the next one.
+func TestExcerptSkipsEmptyComment(t *testing.T) {
+	it := entry(1, 1, 1, 1, 1)
+	it.TopComments = []Comment{
+		{AuthorID: 50, Body: "![](https://example.org/i.png)", Votes: 9},
+		{AuthorID: 51, Body: "worth reading", Votes: 3},
+	}
+	d, _ := Build([]Item{it}, View{}, Stats{})
+	if d.Featured.Excerpt != "worth reading" {
+		t.Fatalf("excerpt %q", d.Featured.Excerpt)
+	}
+}
+
 func TestEmptyWhenEverythingDropped(t *testing.T) {
 	if _, ok := Build(nil, View{}, Stats{}); ok {
 		t.Fatal("empty input sent")
@@ -293,6 +332,24 @@ func TestShownRanksByThisWeek(t *testing.T) {
 	// old scores 2*1+3*2 = 8 again; fresh scores 1+2*3+3*2 = 13.
 	if d.Featured.Item.Key.ID != 2 || !eq(keys(d.More), []int64{1}) {
 		t.Fatalf("got featured %d, more %v", d.Featured.Item.Key.ID, keys(d.More))
+	}
+}
+
+// A returning thread quotes the best of this week's comments, never an
+// older one.
+func TestShownExcerptIsThisWeek(t *testing.T) {
+	it := entry(1, 1, 1, 9, 1)
+	it.NewComments = 1
+	it.TopComments = []Comment{{AuthorID: 50, Body: "from before", Votes: 40}}
+	v := View{Shown: map[Key]bool{{KindEntry, 1}: true}}
+	d, _ := Build([]Item{it}, v, Stats{})
+	if d.Featured.Excerpt != "" {
+		t.Fatalf("quoted an older comment: %q", d.Featured.Excerpt)
+	}
+	it.TopNew = []Comment{{AuthorID: 51, Body: "this week", Votes: 2}}
+	d, _ = Build([]Item{it}, v, Stats{})
+	if d.Featured.Excerpt != "this week" {
+		t.Fatalf("excerpt %q", d.Featured.Excerpt)
 	}
 }
 

@@ -15,9 +15,10 @@
 </tr>
 </table>
 {{with .Featured}}<div style="background:#f4f7fb;border-radius:6px;padding:12px;margin:12px 0;">
-<div style="color:#22aa66;font-size:12px;font-weight:600;">{{.Magazine}}{{if .Label}} · {{.Label}}{{end}}</div>
 <a href="{{.URL}}" style="color:#1144cc;text-decoration:none;font-weight:600;font-size:16px;">{{.Title}}</a>
-</div>
+<div style="color:#888888;font-size:12px;"><span style="color:#22aa66;font-weight:600;">{{.Magazine}}</span>{{if .Label}} · {{.Label}}{{end}}</div>
+{{if .Excerpt}}<div style="color:#aa6600;font-size:12px;">&ldquo;{{.Excerpt}}&rdquo;</div>
+{{end}}</div>
 {{end}}{{range .More}}<div style="padding:9px 0;border-bottom:1px solid #eeeeee;">
 <a href="{{.URL}}" style="color:#1144cc;text-decoration:none;font-weight:600;">{{.Title}}</a>
 <div style="color:#888888;font-size:12px;"><span style="color:#22aa66;font-weight:600;">{{.Magazine}}</span>{{if .Label}} · {{.Label}}{{end}}</div>

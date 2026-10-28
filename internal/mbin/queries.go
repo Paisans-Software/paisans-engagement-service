@@ -17,11 +17,11 @@ FROM "user" u
 WHERE ` + memberRule + `
 ORDER BY u.id`
 
-// hotSQL is the week's candidate threads, entries and posts alike, with the
-// figures they are ranked by. $1 and $2 are the window's start and end.
-// Columns: kind, id, author, slug, title or body, score, comment_count,
-// federated, magazine id, name, title, participants and the week's comment
-// count.
+// hotSQL is the week's candidate threads, entries and posts alike, with their
+// figures and, for local items, their top three comments. $1 and $2 are the
+// window's start and end. Columns: kind, id, author, slug, title or body,
+// score, comment_count, federated, magazine id, name, title, participants,
+// the week's comment count, top comments and the week's top comments as JSON.
 const hotSQL = `
 WITH
 -- Magazines a member follows: the only way a federated item gets in.
@@ -77,8 +77,35 @@ SELECT c.kind, c.id, c.user_id, c.slug, c.text, c.score, c.comment_count, c.fede
 			AND ec.created_at >= $1 AND ec.created_at < $2)
 	+ (SELECT count(*) FROM post_comment pc
 		WHERE c.kind = 'post' AND pc.post_id = c.id AND pc.visibility = 'visible'
-			AND pc.created_at >= $1 AND pc.created_at < $2) AS new_comments
+			AND pc.created_at >= $1 AND pc.created_at < $2) AS new_comments,
+	top.comments, top.new_comments
 FROM candidates c
+-- The three best liked visible, non adult comments by live local accounts,
+-- of all time and of this week, for local items only: a federated item is
+-- never quoted.
+LEFT JOIN LATERAL (
+	WITH cm AS (
+		SELECT cm.id, cm.user_id, cm.body, cm.votes, cm.created_at FROM (
+			SELECT ec.id, ec.user_id, ec.body, ec.up_votes + ec.favourite_count AS votes,
+				ec.visibility, ec.is_adult, ec.created_at
+			FROM entry_comment ec WHERE c.kind = 'entry' AND ec.entry_id = c.id
+			UNION ALL
+			SELECT pc.id, pc.user_id, pc.body, pc.up_votes + pc.favourite_count,
+				pc.visibility, pc.is_adult, pc.created_at
+			FROM post_comment pc WHERE c.kind = 'post' AND pc.post_id = c.id
+		) cm
+		JOIN "user" u ON u.id = cm.user_id AND u.ap_id IS NULL AND NOT u.is_banned AND NOT u.is_deleted
+		WHERE cm.visibility = 'visible' AND NOT cm.is_adult
+	)
+	SELECT
+		(SELECT json_agg(json_build_object('author', t.user_id, 'body', t.body, 'votes', t.votes)
+			ORDER BY t.votes DESC, t.id)
+		FROM (SELECT * FROM cm ORDER BY votes DESC, id LIMIT 3) t) AS comments,
+		(SELECT json_agg(json_build_object('author', t.user_id, 'body', t.body, 'votes', t.votes)
+			ORDER BY t.votes DESC, t.id)
+		FROM (SELECT * FROM cm WHERE created_at >= $1 AND created_at < $2
+			ORDER BY votes DESC, id LIMIT 3) t) AS new_comments
+) top ON NOT c.federated
 ORDER BY c.score + c.comment_count DESC, c.id, c.kind`
 
 // unansweredSQL is the week's new local threads, entries and posts alike,

@@ -29,10 +29,15 @@ type itemView struct {
 	Title, URL, Magazine, Label string
 }
 
+type featuredView struct {
+	itemView
+	Excerpt string
+}
+
 type view struct {
 	Meta, Instance, SiteURL, Unsubscribe, Dates string
 	Stats                                       digest.Stats
-	Featured                                    *itemView
+	Featured                                    *featuredView
 	More                                        []itemView
 	Unanswered                                  []itemView
 	UnansweredHeading                           string
@@ -46,9 +51,8 @@ func Render(d digest.Digest, n Names, siteURL, unsubscribeURL string, from, to t
 		Dates: from.Format("Jan 2") + " – " + to.AddDate(0, 0, -1).Format("Jan 2"),
 		Stats: d.Stats, UnansweredHeading: d.UnansweredHeading,
 	}
-	if d.Featured != nil {
-		fv := toView(d.Featured.Item)
-		v.Featured = &fv
+	if f := d.Featured; f != nil {
+		v.Featured = &featuredView{itemView: toView(f.Item), Excerpt: f.Excerpt}
 	}
 	for _, it := range d.More {
 		v.More = append(v.More, toView(it))
