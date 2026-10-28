@@ -5,18 +5,18 @@ This week on {{.Meta}}
 {{with .Featured}}
 {{.Title}}
 {{.URL}}
-{{.Magazine}}{{if .Label}} · {{.Label}}{{end}}
+{{.Magazine}}
 {{if .Excerpt}}"{{.Excerpt}}"
 {{end}}{{end}}{{range .More}}
 {{.Title}}
 {{.URL}}
-{{.Magazine}}{{if .Label}} · {{.Label}}{{end}}
+{{.Magazine}}
 {{end}}{{if .Unanswered}}
 {{.UnansweredHeading}}
 {{range .Unanswered}}
 {{.Title}}
 {{.URL}}
-{{.Magazine}}{{if .Label}} · {{.Label}}{{end}}
+{{.Magazine}}
 {{end}}{{end}}
 See everything on {{.Instance}}: {{.SiteURL}}
 

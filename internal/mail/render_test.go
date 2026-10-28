@@ -141,17 +141,18 @@ func TestRenderTextPartHasEveryLink(t *testing.T) {
 	}
 }
 
-func TestRenderPostLabelled(t *testing.T) {
+// A microblog post looks like any thread: no label marks it.
+func TestRenderPostUnlabelled(t *testing.T) {
 	d := sample()
 	d.More[0].Key.Kind = digest.KindPost
 	m := render(t, d)
-	if strings.Count(m.Text, "microblog") != 1 || strings.Count(m.HTML, "microblog") != 1 {
-		t.Fatalf("label count wrong:\n%s", m.Text)
+	if strings.Contains(m.Text, "microblog") || strings.Contains(m.HTML, "microblog") {
+		t.Fatalf("post labelled:\n%s", m.Text)
 	}
 }
 
 // Every item, featured, listed or unanswered, a returning thread too, shows
-// its title, its magazine and, for a post, the microblog label, and nothing
+// its title and its magazine, and nothing
 // it could be counted by. The featured thread quotes its excerpt after them.
 func TestRenderNoFigures(t *testing.T) {
 	d := sample()
@@ -202,10 +203,6 @@ func TestRenderUnanswered(t *testing.T) {
 			if i := strings.Index(part, it.URL); i < head {
 				t.Fatalf("%s: %s missing from the section:\n%s", name, it.URL, part)
 			}
-		}
-		section := part[head:strings.Index(part, "See everything on")]
-		if strings.Count(section, "microblog") != 1 {
-			t.Fatalf("%s: post not labelled:\n%s", name, section)
 		}
 	}
 	if !strings.Contains(m.Text, "\nkettles\nhttps://talk.example.org/m/coffee/t/kettles\n!coffee\n") {

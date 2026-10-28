@@ -12,7 +12,7 @@ All notable changes to this project are documented here, in the
 
 ### Changed
 
-- Every thread in the digest shows its title, its magazine and the microblog label, without comment, vote or people counts or the featured label.
+- Every thread in the digest shows only its title and its magazine, without comment, vote or people counts, the featured label or the microblog label.
 - The digest email's subject and heading read "This week on" the community rather than "Your week on".
 
 ## [0.1.1] - 2026-10-27
