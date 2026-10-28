@@ -1,4 +1,4 @@
-Your week on {{.Meta}}
+This week on {{.Meta}}
 {{.Dates}}
 
 {{.Stats.NewThreads}} new threads | {{.Stats.Comments}} comments | {{.Stats.NewMembers}} new members

@@ -102,7 +102,7 @@ func (f *fakeSMTP) serve(c net.Conn) {
 
 func testMessage() Message {
 	return Message{
-		To: "bob@example.org", Subject: "Your week on Talk", Text: "plain body", HTML: "<p>html body</p>",
+		To: "bob@example.org", Subject: "This week on Talk", Text: "plain body", HTML: "<p>html body</p>",
 		Unsubscribe: "https://digest.example.org/unsubscribe?t=abc",
 	}
 }

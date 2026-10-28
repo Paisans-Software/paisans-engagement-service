@@ -5,6 +5,10 @@ All notable changes to this project are documented here, in the
 
 ## [Unreleased]
 
+### Changed
+
+- The digest email's subject and heading read "This week on" the community rather than "Your week on".
+
 ## [0.1.1] - 2026-10-27
 
 ### Added

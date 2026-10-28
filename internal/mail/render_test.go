@@ -41,11 +41,11 @@ func render(t *testing.T, d digest.Digest) Message {
 
 func TestRenderNames(t *testing.T) {
 	m := render(t, sample())
-	if m.Subject != "Your week on Talk · Example Community" {
+	if m.Subject != "This week on Talk · Example Community" {
 		t.Fatalf("subject %q", m.Subject)
 	}
 	for _, body := range []string{m.HTML, m.Text} {
-		if strings.Count(body, "Your week on Talk · Example Community") < 1 ||
+		if strings.Count(body, "This week on Talk · Example Community") < 1 ||
 			!strings.Contains(body, "member of Talk · Example Community.") {
 			t.Fatalf("meta missing in %s", body)
 		}

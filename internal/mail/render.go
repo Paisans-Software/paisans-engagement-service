@@ -68,7 +68,7 @@ func Render(d digest.Digest, n Names, siteURL, unsubscribeURL string, from, to t
 		return Message{}, fmt.Errorf("render text: %w", err)
 	}
 	return Message{
-		Subject:     "Your week on " + n.Meta,
+		Subject:     "This week on " + n.Meta,
 		Text:        text.String(),
 		HTML:        html.String(),
 		Unsubscribe: unsubscribeURL,
