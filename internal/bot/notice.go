@@ -35,23 +35,28 @@ func (n Notice) Content() map[string]any {
 // Reply is a plain notice.
 func Reply(text string) Notice { return Notice{Body: text} }
 
-const maxTitles = 3
+const maxTitles = 5
 
-type titled struct{ Title, URL string }
+// titled is one line of the notice. A microblog post has no title, so Post
+// has its text quoted instead, as the email does.
+type titled struct {
+	Title, URL string
+	Post       bool
+}
 
 var weeklyHTML = template.Must(template.New("weekly").Parse(
 	`<p>Your weekly digest from {{.Meta}}</p>` +
-		`{{if .Items}}<ul>{{range .Items}}<li><a href="{{.URL}}">{{.Title}}</a></li>{{end}}</ul>{{end}}` +
+		`{{if .Items}}<ul>{{range .Items}}<li><a href="{{.URL}}">{{if .Post}}&ldquo;{{.Title}}&rdquo;{{else}}{{.Title}}{{end}}</a></li>{{end}}</ul>{{end}}` +
 		`<p>Read the whole digest: <a href="{{.Link}}">{{.Link}}</a></p>` +
 		`<p>Reply stop to stop these messages.</p>`))
 
-// Weekly is the Monday notice: up to three thread titles, the link to the
+// Weekly is the Monday notice: up to five threads and posts, the link to the
 // whole digest on the web, and how to stop.
 func Weekly(d digest.Digest, meta, link string) Notice {
 	var items []titled
 	add := func(it digest.Item) {
-		if it.Key.Kind != digest.KindPost && len(items) < maxTitles {
-			items = append(items, titled{it.Title, it.URL})
+		if len(items) < maxTitles {
+			items = append(items, titled{it.Title, it.URL, it.Key.Kind == digest.KindPost})
 		}
 	}
 	if d.Featured != nil {
@@ -64,7 +69,11 @@ func Weekly(d digest.Digest, meta, link string) Notice {
 	lines := []string{"Your weekly digest from " + meta, ""}
 	if len(items) > 0 {
 		for _, it := range items {
-			lines = append(lines, "• "+it.Title)
+			if it.Post {
+				lines = append(lines, "• \""+it.Title+"\"")
+			} else {
+				lines = append(lines, "• "+it.Title)
+			}
 		}
 		lines = append(lines, "")
 	}
