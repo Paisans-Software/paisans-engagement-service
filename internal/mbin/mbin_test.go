@@ -325,6 +325,18 @@ func TestQueriesStayInsideAllowlist(t *testing.T) {
 	if _, err := s.IsMember(ctx, "sub-1"); err != nil {
 		t.Fatalf("IsMember: %v", err)
 	}
+	if ns, err := s.Newcomers(ctx, old.Add(-time.Hour)); err != nil || len(ns) == 0 {
+		t.Fatalf("Newcomers: %v, %v", ns, err)
+	}
+	if rs, err := s.Active(ctx, from); err != nil || len(rs) == 0 {
+		t.Fatalf("Active: %v, %v", rs, err)
+	}
+	if cs, err := s.Commenters(ctx, []int64{100}); err != nil || len(cs) == 0 {
+		t.Fatalf("Commenters: %v, %v", cs, err)
+	}
+	if ss, err := s.SubjectsByEmail(ctx, []string{"u1@example.org"}); err != nil || len(ss) == 0 {
+		t.Fatalf("SubjectsByEmail: %v, %v", ss, err)
+	}
 }
 
 func TestMembersRule(t *testing.T) {

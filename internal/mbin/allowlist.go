@@ -14,8 +14,8 @@ var Allowlist = map[string][]string{
 	"entry_comment":         {"id", "user_id", "entry_id", "magazine_id", "body", "up_votes", "favourite_count", "visibility", "is_adult", "created_at"},
 	"post":                  {"id", "user_id", "magazine_id", "slug", "body", "comment_count", "score", "is_adult", "visibility", "ap_id", "created_at", "last_active"},
 	"post_comment":          {"id", "user_id", "post_id", "magazine_id", "body", "up_votes", "favourite_count", "visibility", "is_adult", "created_at"},
-	"entry_vote":            {"user_id", "entry_id", "choice"},
-	"post_vote":             {"user_id", "post_id", "choice"},
+	"entry_vote":            {"user_id", "entry_id", "choice", "created_at"},
+	"post_vote":             {"user_id", "post_id", "choice", "created_at"},
 	"favourite":             {"user_id", "entry_id", "post_id"},
 	"bookmark":              {"user_id", "entry_id", "post_id"},
 	"notification":          {"user_id", "status", "entry_id", "entry_comment_id", "post_id", "post_comment_id"},
@@ -24,5 +24,5 @@ var Allowlist = map[string][]string{
 	"magazine_block":        {"user_id", "magazine_id"},
 	"magazine_ban":          {"user_id", "magazine_id", "expired_at"},
 	"user_block":            {"blocker_id", "blocked_id"},
-	"user":                  {"id", "username", "email", "is_verified", "is_banned", "is_deleted", "marked_for_deletion_at", "visibility", "type", "ap_id", "oauth_oidc_id", "last_active", "created_at"},
+	"user":                  {"id", "username", "email", "is_verified", "is_banned", "is_deleted", "marked_for_deletion_at", "visibility", "type", "ap_id", "oauth_oidc_id", "last_active", "created_at", "application_status"},
 }

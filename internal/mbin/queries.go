@@ -17,11 +17,16 @@ FROM "user" u
 WHERE ` + memberRule + `
 ORDER BY u.id`
 
+// WelcomeMagazine is the local magazine the welcome threads go in.
+const WelcomeMagazine = "welcome"
+
 // openMagazine is a magazine m whose threads the digest may show and name:
-// visible, not deleted here or on its home server, not marked for deletion
-// and not adult.
+// visible, not deleted here or on its home server, not marked for deletion,
+// not adult, and not the local welcome magazine, whose threads the welcome
+// email promotes instead.
 const openMagazine = `m.visibility = 'visible' AND m.ap_deleted_at IS NULL
-	AND m.marked_for_deletion_at IS NULL AND NOT m.is_adult`
+	AND m.marked_for_deletion_at IS NULL AND NOT m.is_adult
+	AND NOT (m.ap_id IS NULL AND m.name = '` + WelcomeMagazine + `')`
 
 // activeBan is a magazine_ban row still in force: a ban with an expiry in the
 // past no longer applies.
@@ -230,3 +235,42 @@ SELECT
 	+ (SELECT count(*) FROM post_comment pc JOIN "user" u ON u.id = pc.user_id
 		WHERE u.ap_id IS NULL AND pc.visibility = 'visible' AND pc.created_at >= $1 AND pc.created_at < $2),
 	(SELECT count(*) FROM "user" u WHERE ` + memberRule + ` AND u.created_at >= $1 AND u.created_at < $2)`
+
+// newcomersSQL is the members created at or after $1 and approved, newest
+// first.
+const newcomersSQL = `
+SELECT u.id, u.oauth_oidc_id, u.username, u.created_at
+FROM "user" u
+WHERE ` + memberRule + ` AND u.application_status = 'Approved' AND u.created_at >= $1
+ORDER BY u.id DESC
+LIMIT 500`
+
+// activeSQL is every member with a verified address and how much they did
+// since $1: local threads and microblogs, comments, and votes, most first.
+const activeSQL = `
+SELECT u.id, u.oauth_oidc_id, u.email, u.username,
+	(SELECT count(*) FROM entry e WHERE e.user_id = u.id AND e.ap_id IS NULL
+		AND e.visibility = 'visible' AND e.created_at >= $1)
+	+ (SELECT count(*) FROM post p WHERE p.user_id = u.id AND p.ap_id IS NULL
+		AND p.visibility = 'visible' AND p.created_at >= $1)
+	+ (SELECT count(*) FROM entry_comment ec WHERE ec.user_id = u.id
+		AND ec.visibility = 'visible' AND ec.created_at >= $1)
+	+ (SELECT count(*) FROM post_comment pc WHERE pc.user_id = u.id
+		AND pc.visibility = 'visible' AND pc.created_at >= $1)
+	-- Choice 0 is a vote taken back.
+	+ (SELECT count(*) FROM entry_vote v WHERE v.user_id = u.id AND v.choice <> 0 AND v.created_at >= $1)
+	+ (SELECT count(*) FROM post_vote v WHERE v.user_id = u.id AND v.choice <> 0 AND v.created_at >= $1) AS score
+FROM "user" u
+WHERE ` + memberRule + ` AND u.is_verified AND u.email IS NOT NULL AND u.email <> ''
+ORDER BY score DESC, u.id`
+
+// commentersSQL is who left a visible comment on each of the threads $1.
+const commentersSQL = `
+SELECT DISTINCT entry_id, user_id FROM entry_comment
+WHERE entry_id = ANY($1) AND visibility = 'visible'`
+
+// subjectsByEmailSQL is the subject of each member whose address, in lower
+// case, is in $1.
+const subjectsByEmailSQL = `
+SELECT lower(u.email), u.oauth_oidc_id FROM "user" u
+WHERE ` + memberRule + ` AND lower(u.email) = ANY($1)`

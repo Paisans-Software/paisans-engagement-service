@@ -15,7 +15,8 @@ CREATE TABLE "user" (
     ap_id                  VARCHAR(255),
     oauth_oidc_id          VARCHAR(255),
     last_active            TIMESTAMPTZ,
-    created_at             TIMESTAMPTZ NOT NULL
+    created_at             TIMESTAMPTZ NOT NULL,
+    application_status     TEXT NOT NULL DEFAULT 'Approved'
 );
 
 CREATE TABLE magazine (
@@ -86,15 +87,17 @@ CREATE TABLE post_comment (
 );
 
 CREATE TABLE entry_vote (
-    user_id  INT NOT NULL,
-    entry_id INT NOT NULL,
-    choice   INT NOT NULL
+    user_id    INT NOT NULL,
+    entry_id   INT NOT NULL,
+    choice     INT NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
 CREATE TABLE post_vote (
-    user_id INT NOT NULL,
-    post_id INT NOT NULL,
-    choice  INT NOT NULL
+    user_id    INT NOT NULL,
+    post_id    INT NOT NULL,
+    choice     INT NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
 -- One table for every kind of favourite; the columns that do not apply are null.
