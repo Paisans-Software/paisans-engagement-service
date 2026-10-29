@@ -19,18 +19,23 @@ The pages are `/u/{token}`, `/d/{week}` and `/d/preview/{week}`, and `GET /healt
 On a deployment with a Matrix homeserver, a member gets the same week's digest as a direct message from the bot, in the same Monday run, as well as the email.
 
 * **Who qualifies.** A member whose Matrix account MAS links to their Pocket ID subject at the configured upstream provider (`ENGAGEMENT_MAS_UPSTREAM_PROVIDER`), and whose Matrix setting is on. The service asks MAS which user is linked to the subject and reads that user's username, so the member is `@<username>:<server name>`; it never guesses from the Mbin username. A verified email is not needed, and the email unsubscribe does not affect it. A member with no linked account is skipped and asked about again the next week.
-* **The message.** An `m.notice` with the same text as an HTML `formatted_body`, so clients render the links. In the HTML the line reads "Read the whole digest." with "Read" as the link, and the blank lines between sections are `<br>`s so they show in every client:
+* **The message.** An `m.notice` with the same text as an HTML `formatted_body`, so clients render the links. The plain body gives each thread's link on the line below its title; the HTML links the title instead. In the HTML the last line reads "Read the whole digest." with "Read" as the link, and the blank lines between sections are `<br>`s so they show in every client:
 
   ```
   This week on <meta title>
 
   • <thread title>
+    <thread link>
   • "<microblog post>"
+    <post link>
   • <thread title>
+    <thread link>
 
   Active where you don't follow:
   • <thread title> · !<magazine>
+    <thread link>
   • "<microblog post>" · !<magazine>
+    <post link>
 
   Read the whole digest: <web digest link>
 

@@ -24,7 +24,8 @@ func TestWeeklyBody(t *testing.T) {
 		},
 	}
 	n := Weekly(d, "Talk · Example", "https://talk", "https://web/d/tok")
-	want := "This week on Talk · Example\n\n• Grinders\n• \"A post\"\n• Beans\n• Kettles\n• Filters\n\n" +
+	want := "This week on Talk · Example\n\n• Grinders\n  https://t/1\n• \"A post\"\n  https://t/2\n• Beans\n  https://t/3\n" +
+		"• Kettles\n  https://t/4\n• Filters\n  https://t/5\n\n" +
 		"Read the whole digest: https://web/d/tok\n\nReply 'stop' to stop these messages."
 	if n.Body != want {
 		t.Fatalf("body = %q", n.Body)
@@ -48,7 +49,7 @@ func TestWeeklyBody(t *testing.T) {
 func TestWeeklyOnlyPosts(t *testing.T) {
 	d := digest.Digest{More: []digest.Item{item(digest.KindPost, "P", "u")}}
 	n := Weekly(d, "Talk · Example", "https://talk", "L")
-	want := "This week on Talk · Example\n\n• \"P\"\n\nRead the whole digest: L\n\nReply 'stop' to stop these messages."
+	want := "This week on Talk · Example\n\n• \"P\"\n  u\n\nRead the whole digest: L\n\nReply 'stop' to stop these messages."
 	if n.Body != want {
 		t.Fatalf("body = %q", n.Body)
 	}
@@ -99,8 +100,8 @@ func discoverDigest(following []digest.Magazine) digest.Digest {
 
 func TestWeeklyDiscover(t *testing.T) {
 	n := Weekly(discoverDigest([]digest.Magazine{{ID: 1, Name: "coffee"}}), "Talk · Example", "https://talk", "https://web/d/tok")
-	want := "This week on Talk · Example\n\n• Grinders\n• Beans\n\n" +
-		"Active where you don't follow:\n• Bikes · !cycling\n• \"A post\" · !books\n\n" +
+	want := "This week on Talk · Example\n\n• Grinders\n  https://t/1\n• Beans\n  https://t/2\n\n" +
+		"Active where you don't follow:\n• Bikes · !cycling\n  https://t/7\n• \"A post\" · !books\n  https://t/8\n\n" +
 		"Read the whole digest: https://web/d/tok\n\nReply 'stop' to stop these messages."
 	if n.Body != want {
 		t.Fatalf("body = %q", n.Body)
@@ -121,7 +122,7 @@ func TestWeeklyDiscoverNudge(t *testing.T) {
 	if !strings.Contains(n.FormattedBody, `<a href="https://talk/m/cycling">!cycling</a>`) {
 		t.Fatalf("magazine link: %q", n.FormattedBody)
 	}
-	if !strings.Contains(n.Body, "\n\nActive around the site:\n• Bikes · !cycling\n") ||
+	if !strings.Contains(n.Body, "\n\nActive around the site:\n• Bikes · !cycling\n  https://t/7\n") ||
 		!strings.Contains(n.FormattedBody, "<br>Active around the site:<ul>") {
 		t.Fatalf("notice = %q / %q", n.Body, n.FormattedBody)
 	}
@@ -184,7 +185,7 @@ func TestTxnIDStable(t *testing.T) {
 func TestWeeklyPreview(t *testing.T) {
 	d := digest.Digest{Featured: &digest.Featured{Item: item(digest.KindEntry, "Grinders", "https://t/1")}}
 	n := WeeklyPreview(d, "Talk", "https://talk", "https://web/d/tok")
-	want := "[Preview] This week on Talk\n\n• Grinders\n\n" +
+	want := "[Preview] This week on Talk\n\n• Grinders\n  https://t/1\n\n" +
 		"Read the whole digest: https://web/d/tok\n\nReply 'stop' to stop these messages."
 	if n.Body != want {
 		t.Fatalf("body = %q", n.Body)

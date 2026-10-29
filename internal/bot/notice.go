@@ -58,7 +58,7 @@ type titled struct {
 	Post                              bool
 }
 
-// line is t as a plain text line.
+// line is t as plain text: its title, and its URL indented below it.
 func (t titled) line() string {
 	s := "• " + t.Title
 	if t.Post {
@@ -67,7 +67,7 @@ func (t titled) line() string {
 	if t.Magazine != "" {
 		s += " · !" + t.Magazine
 	}
-	return s
+	return s + "\n  " + t.URL
 }
 
 // stopLine ends the notice.
