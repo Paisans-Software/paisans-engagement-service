@@ -5,6 +5,8 @@ All notable changes to this project are documented here, in the
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-10-29
+
 ### Added
 
 - A Monday Matrix message from a bot account (Community Bot unless `ENGAGEMENT_MATRIX_BOT_DISPLAY_NAME` names it) with the week's first five threads and microblog posts and a link, for every member with a linked Matrix account.
