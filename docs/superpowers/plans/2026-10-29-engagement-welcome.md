@@ -68,7 +68,8 @@
 **Files:** Modify `internal/mbin/queries.go`, `internal/mbin/mbin.go`, `internal/mbin/allowlist.go`, `internal/mbin/testdata/schema.sql`; Test `internal/mbin/welcome_test.go`, `internal/mbin/mbin_test.go`.
 
 **Interfaces:** Produces on `*mbin.Source`:
-- `Newcomers(ctx, since time.Time) ([]Newcomer, error)`, `type Newcomer struct { ID int64; Subject, Username string; CreatedAt time.Time }`: member rule plus `application_status = 'Approved'`, created at or after `since`, newest first by id, at most 500.
+- `Newcomers(ctx, since time.Time, skip []int64, limit int) ([]Newcomer, error)`, `type Newcomer struct { ID int64; Subject, Username string; CreatedAt time.Time }`: member rule plus `application_status = 'Approved'`, created at or after `since`, not in `skip`, oldest first by id, at most `limit`.
+- `WelcomeThread(ctx, title string, since time.Time) (id int64, slug string, found bool, err error)`: the local welcome thread with that title, to finish a batch whose post answer was lost.
 - `Active(ctx, since time.Time) ([]Ranked, error)`, `type Ranked struct { digest.Member; Score int }`: every member with a verified address, ordered by local threads, microblogs, comments and votes since `since`, then by id.
 - `Commenters(ctx, entryIDs []int64) (map[int64]map[int64]bool, error)`: entry id → member ids with a visible comment.
 - `SubjectsByEmail(ctx, emails []string) (map[string]string, error)`: lower-cased email → subject, members only.
@@ -80,7 +81,7 @@
 
 **Files:** Create `internal/mbinapi/client.go`; Test `internal/mbinapi/client_test.go`.
 
-**Interfaces:** Produces `New(baseURL, clientID, secret string, hc *http.Client) *Client`; `Scopes` constant (Global Constraints); `type Magazine struct { ID int64; Name string; PostingRestricted bool }`; `type Entry struct { ID int64; Slug string }`; methods `MagazineByName(ctx, name) (Magazine, bool, error)`, `CreateMagazine(ctx, name, title, description string) (Magazine, error)` (`POST /api/agent/magazines`), `RestrictPosting(ctx, id int64) error` (`PUT /api/moderate/magazine/{id}`, body `{"isPostingRestrictedToMods":true,"isAdult":false}`), `CreateThread(ctx, magazineID int64, title, body string) (Entry, error)` (`POST /api/magazine/{id}/article`, body `title`, `body`, `lang` `en`), `Subscribe(ctx, userID, magazineID int64) error` (`PUT /api/agent/users/{u}/magazines/{m}/subscription`). Errors: `ErrForbidden` for 401/403 after one token refresh, `ErrRefused` for 400, `ErrUnavailable` for transport errors and 5xx.
+**Interfaces:** Produces `New(baseURL, clientID, secret string, hc *http.Client) *Client`; `Scopes` constant (Global Constraints); `type Magazine struct { ID int64; Name string; PostingRestricted bool }`; `type Entry struct { ID int64; Slug string }`; methods `MagazineByName(ctx, name) (Magazine, bool, error)`, `CreateMagazine(ctx, name, title, description string) (Magazine, error)` (`POST /api/agent/magazines`), `RestrictPosting(ctx, id int64) error` (`PUT /api/moderate/magazine/{id}`, body `{"isPostingRestrictedToMods":true}`), `CreateThread(ctx, magazineID int64, title, body string) (Entry, error)` (`POST /api/magazine/{id}/article`, body `title`, `body`, `lang` `en`), `Subscribe(ctx, userID, magazineID int64) error` (`PUT /api/agent/users/{u}/magazines/{m}/subscription`). Errors: `ErrForbidden` for 401/403 after one token refresh, `ErrRefused` for 400, 422 and 404, quoting Mbin's reason, `ErrUnavailable` for transport errors and 5xx.
 
 - [ ] Tests against `httptest`: token request form carries the grant, id, secret and scopes, and is cached; a 401 drops the token and retries once; each method's path, method and JSON; 403 → `ErrForbidden`; 400 → `ErrRefused`; 503 → `ErrUnavailable`; 404 on `MagazineByName` → not found. Implement, run, commit.
 
@@ -88,7 +89,7 @@
 
 **Files:** Modify `internal/mas/client.go`, `internal/mas/mastest/server.go`, `internal/matrix/rooms.go`, `internal/matrix/matrixtest/server.go`; Test `internal/mas/client_test.go`, `internal/matrix/rooms_test.go`.
 
-**Interfaces:** Produces `(*mas.Client).NewestUsers(ctx, n int) ([]mas.User, error)` (`GET /api/admin/v1/users?page[last]=n&filter[status]=active`); `(*matrix.Client).ResolveAlias(ctx, alias string) (roomID string, found bool, err error)`; `(*matrix.Client).Join(ctx, roomIDOrAlias string) (string, error)`; `(*matrix.Client).CreateCommunityRoom(ctx, name, aliasLocalpart string) (string, error)` (preset `public_chat`, `visibility` `public`, `room_alias_name`, `name`, `m.federate` false, `history_visibility` `shared`). Fakes gain the list, alias directory and join.
+**Interfaces:** Produces `mas.ULIDAt(t time.Time) string` and `(*mas.Client).UsersAfter(ctx, after string, n int) ([]mas.User, error)` (`GET /api/admin/v1/users?page[after]=…&page[first]=n&filter[status]=active`); `(*matrix.Client).ResolveAlias(ctx, alias string) (roomID string, found bool, err error)`; `(*matrix.Client).Join(ctx, roomIDOrAlias string) (string, error)`; `(*matrix.Client).CreateCommunityRoom(ctx, name, aliasLocalpart string) (string, error)` (preset `public_chat`, `visibility` `public`, `room_alias_name`, `name`, `m.federate` false, `history_visibility` `shared`). Fakes gain the list, alias directory and join.
 
 - [ ] Tests: newest users query and order; resolve found / `M_NOT_FOUND`; create request body fields; join returns the room id. Implement, run, commit.
 

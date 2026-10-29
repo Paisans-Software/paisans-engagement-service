@@ -1,9 +1,11 @@
 package welcome
 
 import (
+	"cmp"
 	"context"
 	"fmt"
 	"math/rand/v2"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -27,16 +29,23 @@ type fakeMbin struct {
 	ranked     []mbin.Ranked
 	commenters map[int64]map[int64]bool
 	subjects   map[string]string
+	// threads is every thread in /m/welcome by title, as Mbin committed it.
+	threads map[string]mbinapi.Entry
 }
 
-func (f *fakeMbin) Newcomers(_ context.Context, since time.Time) ([]mbin.Newcomer, error) {
+func (f *fakeMbin) Newcomers(_ context.Context, since time.Time, skip []int64, limit int) ([]mbin.Newcomer, error) {
 	var out []mbin.Newcomer
 	for _, n := range f.newcomers {
-		if !n.CreatedAt.Before(since) {
+		if !n.CreatedAt.Before(since) && !slices.Contains(skip, n.ID) {
 			out = append(out, n)
 		}
 	}
-	return out, nil
+	slices.SortFunc(out, func(a, b mbin.Newcomer) int { return cmp.Compare(a.ID, b.ID) })
+	return out[:min(len(out), limit)], nil
+}
+func (f *fakeMbin) WelcomeThread(_ context.Context, title string, _ time.Time) (int64, string, bool, error) {
+	e, ok := f.threads[title]
+	return e.ID, e.Slug, ok, nil
 }
 func (f *fakeMbin) Active(context.Context, time.Time) ([]mbin.Ranked, error) { return f.ranked, nil }
 func (f *fakeMbin) Commenters(context.Context, []int64) (map[int64]map[int64]bool, error) {
@@ -51,13 +60,17 @@ func (f *fakeMbin) SubjectsByEmail(context.Context, []string) (map[string]string
 
 type fakeAPI struct {
 	mu          sync.Mutex
+	mbin        *fakeMbin
 	magazine    *mbinapi.Magazine
 	threads     []string
 	created     int
 	restricted  int
 	subscribed  []int64
+	subErr      map[int64]error
 	postErr     error
 	restrictErr error
+	// lost makes the next post commit at Mbin and its answer never arrive.
+	lost bool
 }
 
 func (f *fakeAPI) MagazineByName(context.Context, string) (mbinapi.Magazine, bool, error) {
@@ -88,9 +101,21 @@ func (f *fakeAPI) CreateThread(_ context.Context, _ int64, title, _ string) (mbi
 		return mbinapi.Entry{}, f.postErr
 	}
 	f.threads = append(f.threads, title)
-	return mbinapi.Entry{ID: int64(100 + len(f.threads)), Slug: "welcome"}, nil
+	e := mbinapi.Entry{ID: int64(100 + len(f.threads)), Slug: "welcome"}
+	if f.mbin.threads == nil {
+		f.mbin.threads = map[string]mbinapi.Entry{}
+	}
+	f.mbin.threads[title] = e
+	if f.lost {
+		f.lost = false
+		return mbinapi.Entry{}, fmt.Errorf("%w: create thread request failed", mbinapi.ErrUnavailable)
+	}
+	return e, nil
 }
 func (f *fakeAPI) Subscribe(_ context.Context, user, _ int64) error {
+	if err := f.subErr[user]; err != nil {
+		return err
+	}
 	f.subscribed = append(f.subscribed, user)
 	return nil
 }
@@ -103,14 +128,15 @@ type fakeBot struct {
 	roomCalls   int
 }
 
-func (f *fakeBot) NewMembers(_ context.Context, since time.Time) ([]bot.Newcomer, error) {
+func (f *fakeBot) NewMembers(_ context.Context, since time.Time, skip func(string) bool, limit int) ([]bot.Newcomer, error) {
 	var out []bot.Newcomer
 	for _, n := range f.members {
-		if !n.CreatedAt.Before(since) {
+		if !n.CreatedAt.Before(since) && !skip(n.MASUserID) {
 			out = append(out, n)
 		}
 	}
-	return out, nil
+	slices.SortFunc(out, func(a, b bot.Newcomer) int { return a.CreatedAt.Compare(b.CreatedAt) })
+	return out[:min(len(out), limit)], nil
 }
 func (f *fakeBot) CommunityRoom(context.Context, string, string) (string, error) {
 	f.roomCalls++
@@ -133,7 +159,8 @@ func (f *fakeBot) Deliver(_ context.Context, t bot.Target, _ string, _ bot.Notic
 
 func newRunner(t *testing.T) (*Runner, *fakeMbin, *fakeAPI, *fakeBot, *mailtest.Recorder) {
 	st := storetest.New(t)
-	fm, fa, fb, rec := &fakeMbin{}, &fakeAPI{}, &fakeBot{}, &mailtest.Recorder{}
+	fm, fb, rec := &fakeMbin{}, &fakeBot{}, &mailtest.Recorder{}
+	fa := &fakeAPI{mbin: fm}
 	r := &Runner{Store: st, Mbin: fm, API: fa, Bot: func() MatrixBot { return fb },
 		RoomName: "Riverside Community", RoomAlias: "riverside-community", Sender: rec,
 		Names: mail.Names{Meta: "Riverside"}, SiteURL: "https://forum.example.org", PublicURL: "https://e.example.org",
@@ -228,7 +255,10 @@ func TestMbinBatchSkipsMembersBeforeStart(t *testing.T) {
 	}
 }
 
-func TestMbinBatchAlertsWhenNotModerator(t *testing.T) {
+// Only the owner may make the magazine moderator only. A bot that is not
+// the owner tells the operators, asks again only after a day, and still
+// posts the welcome.
+func TestMbinBatchAlertsWhenNotOwner(t *testing.T) {
 	r, fm, fa, fb, rec := newRunner(t)
 	ctx := context.Background()
 	fa.magazine = &mbinapi.Magazine{ID: 3, Name: "welcome"}
@@ -237,20 +267,181 @@ func TestMbinBatchAlertsWhenNotModerator(t *testing.T) {
 	if err := r.MbinBatch(ctx, t0); err != nil {
 		t.Fatal(err)
 	}
-	fm.newcomers = []mbin.Newcomer{newcomer(1, t0.Add(time.Minute))}
-	for i := range 2 {
-		if err := r.MbinBatch(ctx, t0.Add(time.Duration(5*(i+1))*time.Minute)); err == nil {
-			t.Fatal("no error")
+	for i := 1; i <= 3; i++ {
+		fm.newcomers = append(fm.newcomers, newcomer(int64(i), t0.Add(time.Minute)))
+		if err := r.MbinBatch(ctx, t0.Add(time.Duration(5*i)*time.Minute)); err != nil {
+			t.Fatal(err)
 		}
 	}
-	if len(fa.threads) != 0 {
-		t.Fatal("posted in a magazine it cannot manage")
+	if fa.restricted != 1 {
+		t.Fatalf("asked to restrict %d times within a day, want 1", fa.restricted)
 	}
-	if m := rec.Sent(); len(m) != 1 || m[0].To != "op@example.org" || m[0].Unsubscribe != "" {
+	if len(fa.threads) != 3 {
+		t.Fatalf("threads %v; want one per batch", fa.threads)
+	}
+	if m := rec.Sent(); len(m) != 1 || m[0].To != "op@example.org" || m[0].Unsubscribe != "" ||
+		!strings.Contains(m[0].Text, "cannot manage /m/welcome") {
 		t.Fatalf("alerts = %+v, want one email", m)
 	}
 	if len(fb.dms) != 1 || fb.dms[0] != "sub-op" {
 		t.Fatalf("alert DMs = %v", fb.dms)
+	}
+	fm.newcomers = append(fm.newcomers, newcomer(4, t0.Add(24*time.Hour)))
+	if err := r.MbinBatch(ctx, t0.Add(25*time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	if fa.restricted != 2 {
+		t.Fatalf("not asked again after a day: %d", fa.restricted)
+	}
+}
+
+// A thread Mbin committed whose answer was lost is found, not posted again.
+func TestMbinBatchLostAnswerPostsOnce(t *testing.T) {
+	r, fm, fa, _, _ := newRunner(t)
+	ctx := context.Background()
+	if err := r.MbinBatch(ctx, t0); err != nil {
+		t.Fatal(err)
+	}
+	fm.newcomers = []mbin.Newcomer{newcomer(1, t0.Add(time.Minute)), newcomer(2, t0.Add(time.Minute))}
+	fa.lost = true
+	if err := r.MbinBatch(ctx, t0.Add(5*time.Minute)); err == nil {
+		t.Fatal("no error for a lost answer")
+	}
+	fm.newcomers = append(fm.newcomers, newcomer(3, t0.Add(6*time.Minute)))
+	if err := r.MbinBatch(ctx, t0.Add(10*time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	if want := []string{"Welcome @u1 and @u2"}; !slices.Equal(fa.threads, want) {
+		t.Fatalf("threads = %v, want %v and nobody new mixed in", fa.threads, want)
+	}
+	if !slices.Equal(fa.subscribed, []int64{1, 2}) {
+		t.Fatalf("subscribed = %v", fa.subscribed)
+	}
+	if err := r.MbinBatch(ctx, t0.Add(15*time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	if len(fa.threads) != 2 || fa.threads[1] != "Welcome @u3" {
+		t.Fatalf("threads = %v", fa.threads)
+	}
+}
+
+// A refused post tells the operators what Mbin said, and is tried again with
+// the same newcomers.
+func TestMbinBatchRefusedPostRetries(t *testing.T) {
+	r, fm, fa, _, rec := newRunner(t)
+	ctx := context.Background()
+	if err := r.MbinBatch(ctx, t0); err != nil {
+		t.Fatal(err)
+	}
+	fm.newcomers = []mbin.Newcomer{newcomer(1, t0.Add(time.Minute))}
+	fa.postErr = fmt.Errorf("%w: create thread answered 400: Title is too long", mbinapi.ErrRefused)
+	for i := 1; i <= 2; i++ {
+		if err := r.MbinBatch(ctx, t0.Add(time.Duration(5*i)*time.Minute)); err == nil {
+			t.Fatal("no error")
+		}
+	}
+	if m := rec.Sent(); len(m) != 1 || !strings.Contains(m[0].Text, "Title is too long") {
+		t.Fatalf("alerts = %+v", m)
+	}
+	fa.postErr = nil
+	if err := r.MbinBatch(ctx, t0.Add(15*time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(fa.threads, []string{"Welcome @u1"}) {
+		t.Fatalf("threads = %v", fa.threads)
+	}
+}
+
+// A backlog is announced BatchMax at a time, oldest first, and nobody is
+// dropped.
+func TestMbinBatchBacklog(t *testing.T) {
+	r, fm, fa, _, _ := newRunner(t)
+	ctx := context.Background()
+	if err := r.MbinBatch(ctx, t0); err != nil {
+		t.Fatal(err)
+	}
+	for i := 1; i <= BatchMax+7; i++ {
+		fm.newcomers = append(fm.newcomers, newcomer(int64(i), t0.Add(time.Minute)))
+	}
+	for i := 1; i <= 3; i++ {
+		if err := r.MbinBatch(ctx, t0.Add(time.Duration(5*i)*time.Minute)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if len(fa.threads) != 2 || fa.threads[1] != "Welcome @u51, @u52 and 5 others" {
+		t.Fatalf("threads = %v", fa.threads)
+	}
+	if len(fa.subscribed) != BatchMax+7 {
+		t.Fatalf("subscribed %d", len(fa.subscribed))
+	}
+}
+
+// One newcomer Mbin will not subscribe holds up nobody else; a refusal is
+// settled, and a failure that lasts more than a day alerts.
+func TestMbinBatchSubscribesEachOnItsOwn(t *testing.T) {
+	r, fm, fa, _, rec := newRunner(t)
+	ctx := context.Background()
+	if err := r.MbinBatch(ctx, t0); err != nil {
+		t.Fatal(err)
+	}
+	fm.newcomers = []mbin.Newcomer{newcomer(1, t0.Add(time.Minute)), newcomer(2, t0.Add(time.Minute)), newcomer(3, t0.Add(time.Minute))}
+	fa.subErr = map[int64]error{
+		1: fmt.Errorf("%w: subscribe answered 404", mbinapi.ErrRefused),
+		2: fmt.Errorf("%w: subscribe answered 403", mbinapi.ErrForbidden),
+	}
+	if err := r.MbinBatch(ctx, t0.Add(5*time.Minute)); err == nil {
+		t.Fatal("no error for a failed subscription")
+	}
+	if !slices.Equal(fa.subscribed, []int64{3}) {
+		t.Fatalf("subscribed = %v", fa.subscribed)
+	}
+	if n := len(rec.Sent()); n != 0 {
+		t.Fatalf("alerted within the first day: %d", n)
+	}
+	pending, _ := r.Store.PendingSubscriptions(ctx)
+	if len(pending) != 1 || pending[0].MbinID != 2 {
+		t.Fatalf("pending = %+v; want only member 2", pending)
+	}
+	if err := r.MbinBatch(ctx, t0.Add(25*time.Hour)); err == nil {
+		t.Fatal("no error")
+	}
+	if m := rec.Sent(); len(m) != 1 || !strings.Contains(m[0].Text, "more than a day") {
+		t.Fatalf("alerts = %+v", m)
+	}
+}
+
+// A magazine deleted since the last batch is made again.
+func TestMbinBatchRecreatesMagazine(t *testing.T) {
+	r, fm, fa, _, _ := newRunner(t)
+	ctx := context.Background()
+	if err := r.MbinBatch(ctx, t0); err != nil {
+		t.Fatal(err)
+	}
+	fm.newcomers = []mbin.Newcomer{newcomer(1, t0.Add(time.Minute))}
+	if err := r.MbinBatch(ctx, t0.Add(5*time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	fa.magazine = nil
+	fm.newcomers = append(fm.newcomers, newcomer(2, t0.Add(6*time.Minute)))
+	if err := r.MbinBatch(ctx, t0.Add(10*time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	if fa.created != 2 {
+		t.Fatalf("created %d magazines, want 2", fa.created)
+	}
+}
+
+// An alert that reached nobody does not use up the day.
+func TestAlertNotDeliveredKeepsTheDay(t *testing.T) {
+	r, _, _, _, rec := newRunner(t)
+	r.Bot = func() MatrixBot { return nil }
+	ctx := context.Background()
+	rec.Err = mail.ErrRelayUnavailable
+	r.alert(ctx, t0, "k", "broken")
+	rec.Err = nil
+	r.alert(ctx, t0.Add(time.Hour), "k", "broken")
+	if n := len(rec.Sent()); n != 1 {
+		t.Fatalf("alerts sent = %d, want 1 after the first failed", n)
 	}
 }
 

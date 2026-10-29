@@ -14,7 +14,7 @@ All notable changes to this project are documented here, in the
 
 ### Changed
 
-- The weekly digest leaves out the local `/m/welcome` magazine.
+- The weekly digest, its figures included, leaves out the local `/m/welcome` magazine.
 
 ## [0.2.0] - 2026-10-29
 

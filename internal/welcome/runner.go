@@ -1,6 +1,7 @@
 package welcome
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
@@ -18,7 +19,8 @@ import (
 
 // MbinReader is what the welcomes read from Mbin's database.
 type MbinReader interface {
-	Newcomers(ctx context.Context, since time.Time) ([]mbin.Newcomer, error)
+	Newcomers(ctx context.Context, since time.Time, skip []int64, limit int) ([]mbin.Newcomer, error)
+	WelcomeThread(ctx context.Context, title string, since time.Time) (id int64, slug string, found bool, err error)
 	Active(ctx context.Context, since time.Time) ([]mbin.Ranked, error)
 	Commenters(ctx context.Context, entryIDs []int64) (map[int64]map[int64]bool, error)
 	SubjectsByEmail(ctx context.Context, emails []string) (map[string]string, error)
@@ -35,7 +37,7 @@ type MbinAPI interface {
 
 // MatrixBot is the Matrix bot as the welcomes use it.
 type MatrixBot interface {
-	NewMembers(ctx context.Context, since time.Time) ([]bot.Newcomer, error)
+	NewMembers(ctx context.Context, since time.Time, skip func(masUserID string) bool, limit int) ([]bot.Newcomer, error)
 	CommunityRoom(ctx context.Context, name, alias string) (string, error)
 	Announce(ctx context.Context, roomID, txnID string, content map[string]any) error
 	Prepare(ctx context.Context, subject string) (bot.Target, bool, error)
@@ -67,9 +69,9 @@ type Runner struct {
 	DailyLimit         int
 	Operators          []string
 
-	magazine int64  // the welcome magazine's id, once known
-	room     string // the community room's id, once found
-	emailed  string // the day whose email this process finished
+	room            string    // the community room's id, once found
+	emailed         string    // the day whose email this process finished
+	restrictRefused time.Time // when Mbin last refused to make the magazine moderator only
 }
 
 func (r *Runner) bot() MatrixBot {
@@ -92,8 +94,14 @@ func (r *Runner) since(ctx context.Context, p store.Platform, now time.Time) (ti
 	return start, nil
 }
 
-// MbinBatch welcomes the Mbin newcomers not yet welcomed in one thread, and
-// subscribes every newcomer welcomed and not yet subscribed to the magazine.
+// BatchMax is the most newcomers one announcement names. A backlog larger
+// than that is announced over the following batches.
+const BatchMax = 50
+
+// MbinBatch finishes the batch of Mbin newcomers whose thread is not known to
+// be posted, or else welcomes up to BatchMax newcomers not yet welcomed in a
+// new thread; then it subscribes every newcomer whose subscription to the
+// magazine is not settled.
 func (r *Runner) MbinBatch(ctx context.Context, now time.Time) error {
 	if r.API == nil {
 		return nil
@@ -102,115 +110,182 @@ func (r *Runner) MbinBatch(ctx context.Context, now time.Time) error {
 	if err != nil {
 		return err
 	}
-	all, err := r.Mbin.Newcomers(ctx, since)
+	batch, err := r.Store.PendingWelcomes(ctx)
 	if err != nil {
 		return err
 	}
-	done, err := r.Store.WelcomedAccounts(ctx, store.PlatformMbin)
-	if err != nil {
-		return err
-	}
-	var fresh []mbin.Newcomer
-	for _, n := range all {
-		if !done[store.MbinAccount(n.ID)] {
-			fresh = append(fresh, n)
+	retry := len(batch) > 0
+	if !retry {
+		if batch, err = r.newBatch(ctx, since, now); err != nil {
+			return err
 		}
 	}
-	// Oldest first, so the thread names them in the order they joined.
-	slices.SortFunc(fresh, func(a, b mbin.Newcomer) int { return a.CreatedAt.Compare(b.CreatedAt) })
-	pending, err := r.Store.PendingSubscriptions(ctx)
+	subs, err := r.Store.PendingSubscriptions(ctx)
 	if err != nil {
 		return err
 	}
-	if len(fresh) == 0 && len(pending) == 0 {
+	if len(batch) == 0 && len(subs) == 0 {
 		return nil
 	}
 	mag, err := r.ensureMagazine(ctx, now)
 	if err != nil {
 		return err
 	}
-	if len(fresh) > 0 {
-		names := make([]string, len(fresh))
-		for i, n := range fresh {
-			names[i] = n.Username
+	var errs []error
+	if len(batch) > 0 {
+		if err := r.postBatch(ctx, now, mag, batch, retry); err != nil {
+			errs = append(errs, err)
+		} else if subs, err = r.Store.PendingSubscriptions(ctx); err != nil {
+			return err
 		}
-		e, err := r.API.CreateThread(ctx, mag, ThreadTitle(names), ThreadBody(names, r.Names.Meta))
+	}
+	return errors.Join(append(errs, r.subscribe(ctx, now, mag, subs))...)
+}
+
+// newBatch is up to BatchMax newcomers not yet welcomed, oldest first.
+func (r *Runner) newBatch(ctx context.Context, since, now time.Time) ([]store.Welcomed, error) {
+	done, err := r.Store.WelcomedAccounts(ctx, store.PlatformMbin)
+	if err != nil {
+		return nil, err
+	}
+	skip := make([]int64, 0, len(done))
+	for a := range done {
+		if id, err := strconv.ParseInt(a, 10, 64); err == nil {
+			skip = append(skip, id)
+		}
+	}
+	ns, err := r.Mbin.Newcomers(ctx, since, skip, BatchMax)
+	if err != nil {
+		return nil, err
+	}
+	batch := make([]store.Welcomed, len(ns))
+	for i, n := range ns {
+		batch[i] = store.Welcomed{Platform: store.PlatformMbin, Account: store.MbinAccount(n.ID), Name: n.Username,
+			MbinID: n.ID, At: now}
+	}
+	return batch, nil
+}
+
+// postBatch posts the batch's thread. A new batch is recorded first, without
+// a thread, so a post whose answer is lost, or whose record fails after it,
+// is found again rather than posted twice: a batch left without a thread is
+// looked for in the welcome magazine by its title before it is posted again.
+func (r *Runner) postBatch(ctx context.Context, now time.Time, mag int64, batch []store.Welcomed, retry bool) error {
+	slices.SortFunc(batch, func(a, b store.Welcomed) int { return cmp.Compare(a.MbinID, b.MbinID) })
+	names := make([]string, len(batch))
+	accounts := make([]string, len(batch))
+	recorded := now
+	for i, w := range batch {
+		names[i], accounts[i] = w.Name, w.Account
+		if w.At.Before(recorded) {
+			recorded = w.At
+		}
+	}
+	title := ThreadTitle(names)
+	var e mbinapi.Entry
+	found := false
+	if retry {
+		id, slug, ok, err := r.Mbin.WelcomeThread(ctx, title, recorded.Add(-time.Minute))
+		if err != nil {
+			return err
+		}
+		e, found = mbinapi.Entry{ID: id, Slug: slug}, ok
+	} else if err := r.Store.RecordWelcomed(ctx, batch); err != nil {
+		return err
+	}
+	if !found {
+		var err error
+		e, err = r.API.CreateThread(ctx, mag, title, ThreadBody(names, r.Names.Meta))
 		if errors.Is(err, mbinapi.ErrForbidden) || errors.Is(err, mbinapi.ErrRefused) {
 			r.alert(ctx, now, "mbin-post", "The community bot cannot post the welcome thread in /m/"+mbin.WelcomeMagazine+
-				". Check that its Mbin account owns or moderates the magazine and holds the agent role.")
+				", and tries again every five minutes. Mbin said: "+err.Error())
 		}
 		if err != nil {
 			return fmt.Errorf("post the welcome thread: %w", err)
 		}
-		slug := e.Slug
-		if slug == "" {
-			slug = "-"
-		}
-		url := r.SiteURL + "/m/" + mbin.WelcomeMagazine + "/t/" + strconv.FormatInt(e.ID, 10) + "/" + slug
-		ws := make([]store.Welcomed, len(fresh))
-		for i, n := range fresh {
-			ws[i] = store.Welcomed{Platform: store.PlatformMbin, Account: store.MbinAccount(n.ID), Name: n.Username,
-				MbinID: n.ID, EntryID: e.ID, URL: url, At: now}
-		}
-		if err := r.Store.RecordWelcomed(ctx, ws); err != nil {
-			return err
-		}
-		slog.Info("welcomed new members on Mbin", "count", len(fresh))
-		if pending, err = r.Store.PendingSubscriptions(ctx); err != nil {
-			return err
-		}
 	}
-	for _, w := range pending {
+	slug := cmp.Or(e.Slug, "-")
+	url := r.SiteURL + "/m/" + mbin.WelcomeMagazine + "/t/" + strconv.FormatInt(e.ID, 10) + "/" + slug
+	if err := r.Store.SetWelcomeEntry(ctx, accounts, e.ID, url); err != nil {
+		return err
+	}
+	slog.Info("welcomed new members on Mbin", "count", len(batch))
+	return nil
+}
+
+// subscribe subscribes each newcomer to the magazine, one at a time, so one
+// that fails holds up none of the others. A refusal settles the newcomer,
+// who Mbin will not subscribe; any other failure is tried again next batch,
+// and once a newcomer has waited more than a day the operators are told.
+func (r *Runner) subscribe(ctx context.Context, now time.Time, mag int64, subs []store.Welcomed) error {
+	var first error
+	for _, w := range subs {
 		err := r.API.Subscribe(ctx, w.MbinID, mag)
 		switch {
 		case err == nil:
 		case errors.Is(err, mbinapi.ErrRefused):
-			// Mbin will not subscribe this member, such as one banned since
-			// they joined; asking again changes nothing.
-			slog.Warn("Mbin refused to subscribe a newcomer to the welcome magazine")
-		case errors.Is(err, mbinapi.ErrForbidden):
-			r.alert(ctx, now, "mbin-subscribe", "The community bot cannot subscribe new members to /m/"+mbin.WelcomeMagazine+
-				". Check that its Mbin account holds the agent role and its client the agent:magazine:subscribe scope.")
-			return fmt.Errorf("subscribe a newcomer: %w", err)
+			slog.Warn("Mbin refused to subscribe a newcomer to the welcome magazine; not asking again", "reason", err.Error())
 		default:
-			return fmt.Errorf("subscribe a newcomer: %w", err)
+			if first == nil {
+				first = fmt.Errorf("subscribe a newcomer: %w", err)
+			}
+			if now.Sub(w.At) > 24*time.Hour {
+				r.alert(ctx, now, "mbin-subscribe", "The community bot has not been able to subscribe a new member to /m/"+
+					mbin.WelcomeMagazine+" for more than a day. Check that its Mbin account holds the agent role and "+
+					"its client the agent:magazine:subscribe scope. Mbin said: "+err.Error())
+			}
+			continue
 		}
 		if err := r.Store.WelcomeSubscribed(ctx, w.Account); err != nil {
 			return err
 		}
 	}
-	return nil
+	return first
 }
 
+// restrictRetry is how long after Mbin refused to make the magazine
+// moderator only the bot asks again.
+const restrictRetry = 24 * time.Hour
+
 // ensureMagazine finds the welcome magazine, creating it when there is none,
-// and restricts its new threads to moderators. Once per process.
+// and makes its new threads moderator only. It looks every batch, so a
+// magazine deleted since is made again. Mbin lets only the owner change the
+// magazine: refused, the bot tells the operators and does not ask again for a
+// day, and posts anyway if it may.
 func (r *Runner) ensureMagazine(ctx context.Context, now time.Time) (int64, error) {
-	if r.magazine != 0 {
-		return r.magazine, nil
-	}
 	m, found, err := r.API.MagazineByName(ctx, mbin.WelcomeMagazine)
 	if err != nil {
 		return 0, err
 	}
 	if !found {
 		m, err = r.API.CreateMagazine(ctx, mbin.WelcomeMagazine, magazineTitle, magazineDescription)
-	} else if !m.PostingRestricted {
-		err = r.API.RestrictPosting(ctx, m.ID)
+		if errors.Is(err, mbinapi.ErrForbidden) || errors.Is(err, mbinapi.ErrRefused) {
+			r.alert(ctx, now, "mbin-magazine", "The community bot cannot create /m/"+mbin.WelcomeMagazine+
+				". Check that its Mbin account holds the agent role. Mbin said: "+err.Error())
+		}
+		if err != nil {
+			return 0, fmt.Errorf("create the welcome magazine: %w", err)
+		}
+		return m.ID, nil
 	}
-	if errors.Is(err, mbinapi.ErrForbidden) || errors.Is(err, mbinapi.ErrRefused) {
-		r.alert(ctx, now, "mbin-magazine", "The community bot cannot create /m/"+mbin.WelcomeMagazine+
-			" or make it moderator-only. If the magazine exists, make the bot's Mbin account a moderator; "+
-			"otherwise check that it holds the agent role.")
+	if !m.PostingRestricted && now.Sub(r.restrictRefused) >= restrictRetry {
+		err := r.API.RestrictPosting(ctx, m.ID)
+		if errors.Is(err, mbinapi.ErrForbidden) {
+			r.restrictRefused = now
+			r.alert(ctx, now, "mbin-magazine", "The community bot cannot manage /m/"+mbin.WelcomeMagazine+
+				": only its owner may make it moderator only, and the bot is not the owner. Make the bot's Mbin "+
+				"account the owner, or make the magazine moderator only by hand.")
+		} else if err != nil {
+			return 0, fmt.Errorf("make the welcome magazine moderator only: %w", err)
+		}
 	}
-	if err != nil {
-		return 0, fmt.Errorf("the welcome magazine: %w", err)
-	}
-	r.magazine = m.ID
 	return m.ID, nil
 }
 
-// MatrixBatch announces the Matrix newcomers not yet welcomed in one message
-// in the community room. It does nothing while this copy runs no bot.
+// MatrixBatch announces up to BatchMax Matrix newcomers not yet welcomed in
+// one message in the community room. It does nothing while this copy runs no
+// bot. A retried announcement names the same newcomers with the same
+// transaction id, so the homeserver delivers it once.
 func (r *Runner) MatrixBatch(ctx context.Context, now time.Time) error {
 	b := r.bot()
 	if b == nil || r.RoomAlias == "" {
@@ -231,21 +306,17 @@ func (r *Runner) MatrixBatch(ctx context.Context, now time.Time) error {
 		}
 		r.room = room
 	}
-	all, err := b.NewMembers(ctx, since)
-	if err != nil {
-		return err
-	}
 	done, err := r.Store.WelcomedAccounts(ctx, store.PlatformMatrix)
 	if err != nil {
 		return err
 	}
-	var fresh []bot.Newcomer
-	var ids []string
-	for _, n := range all {
-		if !done[n.MASUserID] {
-			fresh = append(fresh, n)
-			ids = append(ids, n.MASUserID)
-		}
+	fresh, err := b.NewMembers(ctx, since, func(id string) bool { return done[id] }, BatchMax)
+	if err != nil {
+		return err
+	}
+	ids := make([]string, len(fresh))
+	for i, n := range fresh {
+		ids[i] = n.MASUserID
 	}
 	if len(fresh) == 0 {
 		return nil

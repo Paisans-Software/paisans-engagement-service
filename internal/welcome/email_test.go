@@ -8,6 +8,7 @@ import (
 
 	"github.com/paisans-software/paisans-engagement-service/internal/mail"
 	"github.com/paisans-software/paisans-engagement-service/internal/mbin"
+	"github.com/paisans-software/paisans-engagement-service/internal/store"
 	"github.com/paisans-software/paisans-engagement-service/internal/token"
 )
 
@@ -116,4 +117,87 @@ func (f *failAfter) Send(ctx context.Context, m mail.Message) error {
 	}
 	f.n--
 	return f.next.Send(ctx, m)
+}
+
+var (
+	monday  = time.Date(2026, 11, 2, 0, 0, 0, 0, time.UTC)
+	tuesday = monday.AddDate(0, 0, 1)
+)
+
+// welcomeAt posts a thread for the Mbin newcomer id at at.
+func welcomeAt(t *testing.T, r *Runner, fm *fakeMbin, id int64, at time.Time) {
+	t.Helper()
+	if _, err := r.Store.WelcomeStart(context.Background(), store.PlatformMbin, monday.AddDate(0, 0, -7)); err != nil {
+		t.Fatal(err)
+	}
+	fm.newcomers = append(fm.newcomers, newcomer(id, at.Add(-time.Minute)))
+	if err := r.MbinBatch(context.Background(), at); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// A service down all of Monday from 09:00 never sends Monday's email on
+// Tuesday: Monday's newcomers go in Tuesday's own email, from 09:00.
+func TestEmailMissedDayIsNeverSentLate(t *testing.T) {
+	r, fm, _, _, rec := newRunner(t)
+	fm.ranked = ranked(2)
+	welcomeAt(t, r, fm, 900, monday.Add(8*time.Hour))
+	ctx := context.Background()
+	if err := r.DailyEmail(ctx, tuesday.Add(30*time.Minute)); err != nil || len(rec.Sent()) != 0 {
+		t.Fatalf("sent %d at 00:30 on Tuesday, %v; want none before 09:00", len(rec.Sent()), err)
+	}
+	if err := r.DailyEmail(ctx, tuesday.Add(10*time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	if n := len(rec.Sent()); n != 2 {
+		t.Fatalf("sent %d on Tuesday, want 2", n)
+	}
+	for day, want := range map[time.Time]int{monday.Add(9 * time.Hour): 0, tuesday.Add(9 * time.Hour): 2} {
+		if got, _ := r.Store.WelcomeSendsOn(ctx, day); len(got) != want {
+			t.Fatalf("sends on %s = %d, want %d", day.Format("Mon"), len(got), want)
+		}
+	}
+}
+
+// A day whose every send failed hands its newcomers to the next day's email.
+func TestEmailUnsentDayRollsOver(t *testing.T) {
+	r, fm, _, _, rec := newRunner(t)
+	fm.ranked = ranked(1)
+	welcomeAt(t, r, fm, 900, monday.Add(8*time.Hour))
+	ctx := context.Background()
+	rec.Err = mail.ErrRelayUnavailable
+	if err := r.DailyEmail(ctx, monday.Add(10*time.Hour)); err == nil {
+		t.Fatal("no error from a relay that is down")
+	}
+	rec.Err = nil
+	r.emailed = ""
+	welcomeAt(t, r, fm, 901, tuesday.Add(8*time.Hour))
+	if err := r.DailyEmail(ctx, tuesday.Add(10*time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	m := rec.Sent()
+	if len(m) != 1 || m[0].Subject != "Say hello to 2 new people on Riverside" {
+		t.Fatalf("Tuesday's email = %+v; want Monday's newcomer rolled in", m)
+	}
+}
+
+// A day whose email went out keeps its newcomers: the next day names only
+// its own.
+func TestEmailSentDayDoesNotRepeat(t *testing.T) {
+	r, fm, _, _, rec := newRunner(t)
+	fm.ranked = ranked(1)
+	welcomeAt(t, r, fm, 900, monday.Add(8*time.Hour))
+	ctx := context.Background()
+	if err := r.DailyEmail(ctx, monday.Add(10*time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	welcomeAt(t, r, fm, 901, tuesday.Add(8*time.Hour))
+	if err := r.DailyEmail(ctx, tuesday.Add(10*time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	m := rec.Sent()
+	if len(m) != 2 || m[1].Subject != "Say hello to 1 new person on Riverside" || !strings.Contains(m[1].Text, "u901") ||
+		strings.Contains(m[1].Text, "u900") {
+		t.Fatalf("emails = %+v", m)
+	}
 }
