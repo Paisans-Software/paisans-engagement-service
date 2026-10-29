@@ -2,9 +2,11 @@ package mail
 
 import (
 	"bytes"
+	"cmp"
 	"embed"
 	"fmt"
 	htmltemplate "html/template"
+	"strings"
 	texttemplate "text/template"
 	"time"
 
@@ -20,7 +22,7 @@ var (
 )
 
 // Names are the community's two titles. Meta names the community in the
-// subject, heading and footer; Instance only in the button.
+// subject, heading and footer; Instance the button and the Discover heading.
 type Names struct{ Instance, Meta string }
 
 // itemView is what the email shows of a thread: its title, link and
@@ -43,6 +45,33 @@ type view struct {
 	More                                        []itemView
 	Unanswered                                  []itemView
 	UnansweredHeading                           string
+	Discover                                    []itemView
+	DiscoverHeading, DiscoverLine               string
+}
+
+// discoverNudge is the Discover line for a member who follows nothing.
+const discoverNudge = "You don't follow any magazines yet. Here's what's busy."
+
+func discoverHeading(n Names) string { return "Around " + n.Instance + " this week" }
+
+// discoverLine names the magazines the member follows, the first few and
+// how many more, or nudges them to follow one.
+func discoverLine(following []digest.Magazine, more int) string {
+	if len(following) == 0 {
+		return discoverNudge
+	}
+	var names []string
+	for _, m := range following {
+		names = append(names, cmp.Or(m.Title, m.Name))
+	}
+	if more > 0 {
+		names = append(names, fmt.Sprintf("%d more", more))
+	}
+	list := names[0]
+	if n := len(names); n > 1 {
+		list = strings.Join(names[:n-1], ", ") + " and " + names[n-1]
+	}
+	return "You follow " + list + ". Other magazines are busy too."
 }
 
 // Render builds the message for one member. from and to are the window; the
@@ -88,6 +117,13 @@ func newView(d digest.Digest, n Names, siteURL, unsubscribeURL string, from, to 
 	}
 	for _, it := range d.Unanswered {
 		v.Unanswered = append(v.Unanswered, toView(it))
+	}
+	if len(d.Discover) > 0 {
+		v.DiscoverHeading = discoverHeading(n)
+		v.DiscoverLine = discoverLine(d.Following, d.FollowingMore)
+		for _, it := range d.Discover {
+			v.Discover = append(v.Discover, toView(it))
+		}
 	}
 	return v
 }

@@ -1015,4 +1015,33 @@ func TestWeekOffersDiscover(t *testing.T) {
 	if n != 6 {
 		t.Fatalf("shown %d times, want 2 threads to 3 members", n)
 	}
+	for _, m := range rec.Messages {
+		for _, it := range d.Discover {
+			if !strings.Contains(m.Text, it.URL) {
+				t.Fatalf("to %s, no %s:\n%s", m.To, it.URL, m.Text)
+			}
+		}
+	}
+}
+
+// A preview is built for a member who follows nothing, so its Discover
+// section nudges them to follow a magazine.
+func TestPreviewOffersDiscover(t *testing.T) {
+	s := storetest.New(t)
+	src := newSource()
+	src.extra = elsewhere()
+	rec := &mailtest.Recorder{}
+	if err := runner(s, src, rec).Preview(context.Background(), week, "one"); err != nil {
+		t.Fatal(err)
+	}
+	if len(rec.Messages) != 1 {
+		t.Fatalf("%d messages", len(rec.Messages))
+	}
+	text := rec.Messages[0].Text
+	for _, want := range []string{"https://talk.example.org/m/cycling/t/21", "https://talk.example.org/m/books/t/22",
+		"follow any magazines yet"} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("preview lacks %q:\n%s", want, text)
+		}
+	}
 }

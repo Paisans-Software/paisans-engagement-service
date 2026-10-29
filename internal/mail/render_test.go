@@ -274,3 +274,86 @@ func TestRenderPageMatchesEmail(t *testing.T) {
 		t.Fatalf("page differs from the email:\n%s\nwant\n%s", got, want)
 	}
 }
+
+func withDiscover(following []digest.Magazine, more int) digest.Digest {
+	d := sample()
+	d.Discover = []digest.Item{item(6, "bikes"), item(7, "novels")}
+	d.Discover[0].Magazine = digest.Magazine{ID: 2, Name: "cycling", Title: "Cycling"}
+	d.Discover[1].Magazine = digest.Magazine{ID: 3, Name: "books", Title: "Books"}
+	d.Following, d.FollowingMore = following, more
+	return d
+}
+
+func TestRenderDiscover(t *testing.T) {
+	d := withDiscover([]digest.Magazine{{Name: "baking", Title: "Baking"}, {Name: "gardening", Title: "Gardening"}}, 0)
+	d.Unanswered = []digest.Item{item(4, "kettles")}
+	d.UnansweredHeading = "No replies yet"
+	m := render(t, d)
+	for name, part := range map[string]string{"text": m.Text, "html": m.HTML} {
+		head := strings.Index(part, "Around Talk this week")
+		if head < 0 || strings.Count(part, "Around Talk this week") != 1 {
+			t.Fatalf("%s: heading missing:\n%s", name, part)
+		}
+		if !strings.Contains(part, "You follow Baking and Gardening. Other magazines are busy too.") {
+			t.Fatalf("%s: explainer missing:\n%s", name, part)
+		}
+		if strings.Index(part, d.More[1].URL) > head || strings.Index(part, "No replies yet") < head ||
+			strings.Index(part, "See everything on") < head {
+			t.Fatalf("%s: section out of place:\n%s", name, part)
+		}
+		for _, it := range d.Discover {
+			if i := strings.Index(part, it.URL); i < head || i > strings.Index(part, "No replies yet") {
+				t.Fatalf("%s: %s missing from the section:\n%s", name, it.URL, part)
+			}
+		}
+	}
+	if !strings.Contains(m.Text, "\nbikes\nhttps://talk.example.org/m/coffee/t/bikes\n!cycling\n") {
+		t.Fatalf("text layout:\n%s", m.Text)
+	}
+}
+
+func TestRenderDiscoverManyFollowed(t *testing.T) {
+	d := withDiscover([]digest.Magazine{{Title: "A"}, {Title: "B"}, {Title: "C"}}, 2)
+	m := render(t, d)
+	if !strings.Contains(m.Text, "You follow A, B, C and 2 more. Other magazines are busy too.") {
+		t.Fatalf("text:\n%s", m.Text)
+	}
+	d = withDiscover([]digest.Magazine{{Title: "A"}, {Title: "B"}, {Title: "C"}}, 0)
+	if m := render(t, d); !strings.Contains(m.Text, "You follow A, B and C. Other") {
+		t.Fatalf("text:\n%s", m.Text)
+	}
+	d = withDiscover([]digest.Magazine{{Name: "solo"}}, 0)
+	if m := render(t, d); !strings.Contains(m.Text, "You follow solo. Other") {
+		t.Fatalf("an untitled magazine is named by its name:\n%s", m.Text)
+	}
+}
+
+func TestRenderDiscoverNudge(t *testing.T) {
+	m := render(t, withDiscover(nil, 0))
+	for name, part := range map[string]string{"text": m.Text, "html": m.HTML} {
+		if !strings.Contains(part, "follow any magazines yet. Here") || strings.Contains(part, "You follow ") {
+			t.Fatalf("%s: no nudge:\n%s", name, part)
+		}
+	}
+	if !strings.Contains(m.Text, "You don't follow any magazines yet. Here's what's busy.") {
+		t.Fatalf("text:\n%s", m.Text)
+	}
+}
+
+// A digest without Discover, including one stored before it existed, has no
+// trace of the section.
+func TestRenderNoDiscover(t *testing.T) {
+	m := render(t, sample())
+	for _, bad := range []string{"Around Talk", "You follow", "follow any magazines"} {
+		if strings.Contains(m.HTML+m.Text, bad) {
+			t.Fatalf("empty section rendered %q", bad)
+		}
+	}
+}
+
+func TestRenderDiscoverEscapes(t *testing.T) {
+	m := render(t, withDiscover([]digest.Magazine{{Title: "<b>x</b>"}}, 0))
+	if strings.Contains(m.HTML, "<b>x</b>") || !strings.Contains(m.HTML, "&lt;b&gt;x&lt;/b&gt;") {
+		t.Fatalf("html:\n%s", m.HTML)
+	}
+}
