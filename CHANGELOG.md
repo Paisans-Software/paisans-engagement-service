@@ -12,6 +12,7 @@ All notable changes to this project are documented here, in the
 - Each sent digest can be read for four weeks at /d/ and the week's date, by the signed-in member it was sent to, behind the community's sign-in gate.
 - A `--preview` option for `send --member` that mails the member the digest a brand-new member would get this week, without claiming them for the week.
 - A section in the digest offering each member up to three of the week's new threads and microblog posts that nobody has answered yet.
+- A section in the digest and the Matrix message with the week's busiest threads from magazines the member does not follow, one per magazine, naming the magazines they follow or asking them to start.
 - A `--matrix` option for `send --member` that sends the member's Matrix message for the week, or with `--preview` a preview message whose link opens for a day, instead of the email.
 
 ### Changed
