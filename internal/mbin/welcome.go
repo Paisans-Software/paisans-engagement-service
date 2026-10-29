@@ -2,6 +2,7 @@ package mbin
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -17,10 +18,14 @@ type Newcomer struct {
 	CreatedAt         time.Time
 }
 
-// Newcomers is every approved member created at or after since, newest
-// first, at most 500.
-func (s *Source) Newcomers(ctx context.Context, since time.Time) ([]Newcomer, error) {
-	rows, err := s.pool.Query(ctx, newcomersSQL, since)
+// Newcomers is the approved members created at or after since, other than
+// those in skip, oldest first, at most limit. Members past the limit are the
+// next call's, so a backlog is worked through rather than dropped.
+func (s *Source) Newcomers(ctx context.Context, since time.Time, skip []int64, limit int) ([]Newcomer, error) {
+	if skip == nil {
+		skip = []int64{}
+	}
+	rows, err := s.pool.Query(ctx, newcomersSQL, since, skip, limit)
 	if err != nil {
 		return nil, fmt.Errorf("newcomers: %w", err)
 	}
@@ -102,4 +107,22 @@ func (s *Source) SubjectsByEmail(ctx context.Context, emails []string) (map[stri
 		return nil, fmt.Errorf("subjects by email: %w", err)
 	}
 	return got, nil
+}
+
+// WelcomeThread finds the thread in the local welcome magazine with the
+// title, created at or after since: a welcome thread that was posted though
+// its answer never arrived.
+func (s *Source) WelcomeThread(ctx context.Context, title string, since time.Time) (id int64, slug string, found bool, err error) {
+	var sl *string
+	err = s.pool.QueryRow(ctx, welcomeThreadSQL, title, since).Scan(&id, &sl)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return 0, "", false, nil
+	}
+	if err != nil {
+		return 0, "", false, fmt.Errorf("welcome thread: %w", err)
+	}
+	if sl != nil {
+		slug = *sl
+	}
+	return id, slug, true, nil
 }

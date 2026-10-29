@@ -26,7 +26,18 @@ const WelcomeMagazine = "welcome"
 // email promotes instead.
 const openMagazine = `m.visibility = 'visible' AND m.ap_deleted_at IS NULL
 	AND m.marked_for_deletion_at IS NULL AND NOT m.is_adult
-	AND NOT (m.ap_id IS NULL AND m.name = '` + WelcomeMagazine + `')`
+	AND NOT ` + isWelcome
+
+// isWelcome is whether magazine m is the local welcome magazine. Mbin finds
+// a magazine by name in any case (MagazineRepository::findOneByName), so the
+// match ignores case too.
+const isWelcome = `(m.ap_id IS NULL AND lower(m.name) = '` + WelcomeMagazine + `')`
+
+// notInWelcome is whether the row whose magazine is column lies outside the
+// local welcome magazine.
+func notInWelcome(column string) string {
+	return `NOT EXISTS (SELECT 1 FROM magazine m WHERE m.id = ` + column + ` AND ` + isWelcome + `)`
+}
 
 // activeBan is a magazine_ban row still in force: a ban with an expiry in the
 // past no longer applies.
@@ -223,43 +234,61 @@ WHERE n.user_id = $1 AND n.status = 'read' AND coalesce(n.post_id, pc.post_id) =
 
 // statsSQL is the week's local figures; $1 and $2 are the window. Comments
 // carry no ap_id of their own, so a local comment is one by a local account.
-// Removed content is not counted.
-const statsSQL = `
+// Removed content is not counted, and neither is anything in the local
+// welcome magazine.
+var statsSQL = `
 SELECT
-	(SELECT count(*) FROM entry WHERE ap_id IS NULL AND visibility = 'visible'
-		AND created_at >= $1 AND created_at < $2)
-	+ (SELECT count(*) FROM post WHERE ap_id IS NULL AND visibility = 'visible'
-		AND created_at >= $1 AND created_at < $2),
+	(SELECT count(*) FROM entry e WHERE e.ap_id IS NULL AND e.visibility = 'visible'
+		AND e.created_at >= $1 AND e.created_at < $2 AND ` + notInWelcome("e.magazine_id") + `)
+	+ (SELECT count(*) FROM post p WHERE p.ap_id IS NULL AND p.visibility = 'visible'
+		AND p.created_at >= $1 AND p.created_at < $2 AND ` + notInWelcome("p.magazine_id") + `),
 	(SELECT count(*) FROM entry_comment ec JOIN "user" u ON u.id = ec.user_id
-		WHERE u.ap_id IS NULL AND ec.visibility = 'visible' AND ec.created_at >= $1 AND ec.created_at < $2)
+		WHERE u.ap_id IS NULL AND ec.visibility = 'visible' AND ec.created_at >= $1 AND ec.created_at < $2
+		AND ` + notInWelcome("ec.magazine_id") + `)
 	+ (SELECT count(*) FROM post_comment pc JOIN "user" u ON u.id = pc.user_id
-		WHERE u.ap_id IS NULL AND pc.visibility = 'visible' AND pc.created_at >= $1 AND pc.created_at < $2),
+		WHERE u.ap_id IS NULL AND pc.visibility = 'visible' AND pc.created_at >= $1 AND pc.created_at < $2
+		AND ` + notInWelcome("pc.magazine_id") + `),
 	(SELECT count(*) FROM "user" u WHERE ` + memberRule + ` AND u.created_at >= $1 AND u.created_at < $2)`
 
-// newcomersSQL is the members created at or after $1 and approved, newest
-// first.
+// newcomersSQL is the approved members created at or after $1, other than
+// the ids in $2, oldest first, at most $3. Mbin stores 'Approved' on every
+// account where approval is off: the column defaults to it
+// (migrations/Version20241104162329.php).
 const newcomersSQL = `
 SELECT u.id, u.oauth_oidc_id, u.username, u.created_at
 FROM "user" u
 WHERE ` + memberRule + ` AND u.application_status = 'Approved' AND u.created_at >= $1
-ORDER BY u.id DESC
-LIMIT 500`
+	AND NOT (u.id = ANY($2))
+ORDER BY u.id
+LIMIT $3`
+
+// welcomeThreadSQL is the first thread in the local welcome magazine titled
+// $1 and created at or after $2.
+const welcomeThreadSQL = `
+SELECT e.id, e.slug FROM entry e
+JOIN magazine m ON m.id = e.magazine_id AND ` + isWelcome + `
+WHERE e.title = $1 AND e.created_at >= $2
+ORDER BY e.id
+LIMIT 1`
 
 // activeSQL is every member with a verified address and how much they did
-// since $1: local threads and microblogs, comments, and votes, most first.
+// on local content since $1: threads and microblogs, comments on local ones
+// and votes on local ones, most first.
 const activeSQL = `
 SELECT u.id, u.oauth_oidc_id, u.email, u.username,
 	(SELECT count(*) FROM entry e WHERE e.user_id = u.id AND e.ap_id IS NULL
 		AND e.visibility = 'visible' AND e.created_at >= $1)
 	+ (SELECT count(*) FROM post p WHERE p.user_id = u.id AND p.ap_id IS NULL
 		AND p.visibility = 'visible' AND p.created_at >= $1)
-	+ (SELECT count(*) FROM entry_comment ec WHERE ec.user_id = u.id
-		AND ec.visibility = 'visible' AND ec.created_at >= $1)
-	+ (SELECT count(*) FROM post_comment pc WHERE pc.user_id = u.id
-		AND pc.visibility = 'visible' AND pc.created_at >= $1)
+	+ (SELECT count(*) FROM entry_comment ec JOIN entry e ON e.id = ec.entry_id AND e.ap_id IS NULL
+		WHERE ec.user_id = u.id AND ec.visibility = 'visible' AND ec.created_at >= $1)
+	+ (SELECT count(*) FROM post_comment pc JOIN post p ON p.id = pc.post_id AND p.ap_id IS NULL
+		WHERE pc.user_id = u.id AND pc.visibility = 'visible' AND pc.created_at >= $1)
 	-- Choice 0 is a vote taken back.
-	+ (SELECT count(*) FROM entry_vote v WHERE v.user_id = u.id AND v.choice <> 0 AND v.created_at >= $1)
-	+ (SELECT count(*) FROM post_vote v WHERE v.user_id = u.id AND v.choice <> 0 AND v.created_at >= $1) AS score
+	+ (SELECT count(*) FROM entry_vote v JOIN entry e ON e.id = v.entry_id AND e.ap_id IS NULL
+		WHERE v.user_id = u.id AND v.choice <> 0 AND v.created_at >= $1)
+	+ (SELECT count(*) FROM post_vote v JOIN post p ON p.id = v.post_id AND p.ap_id IS NULL
+		WHERE v.user_id = u.id AND v.choice <> 0 AND v.created_at >= $1) AS score
 FROM "user" u
 WHERE ` + memberRule + ` AND u.is_verified AND u.email IS NOT NULL AND u.email <> ''
 ORDER BY score DESC, u.id`

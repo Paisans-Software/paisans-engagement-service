@@ -17,7 +17,7 @@ func TestNewcomersApprovedLocalSince(t *testing.T) {
 	f.user(t, 5, row{"created_at": since.Add(time.Hour), "type": "Service"})
 	f.user(t, 6, row{"created_at": since.Add(time.Hour), "is_banned": true})
 	f.user(t, 7, row{"created_at": since.Add(-time.Minute)})
-	ns, err := f.source(t).Newcomers(context.Background(), since)
+	ns, err := f.source(t).Newcomers(context.Background(), since, nil, 500)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -25,11 +25,11 @@ func TestNewcomersApprovedLocalSince(t *testing.T) {
 	for _, n := range ns {
 		ids = append(ids, n.ID)
 	}
-	if !slices.Equal(ids, []int64{2, 1}) {
-		t.Fatalf("newcomers = %v, want [2 1]", ids)
+	if !slices.Equal(ids, []int64{1, 2}) {
+		t.Fatalf("newcomers = %v, want [1 2]", ids)
 	}
-	if ns[0].Subject != "sub-2" || ns[0].Username != "u2" {
-		t.Fatalf("newcomer = %+v", ns[0])
+	if ns[1].Subject != "sub-2" || ns[1].Username != "u2" {
+		t.Fatalf("newcomer = %+v", ns[1])
 	}
 }
 
@@ -132,5 +132,83 @@ func TestDigestLeavesOutWelcome(t *testing.T) {
 	}
 	if len(v.Following) != 1 || v.Following[0].ID != 11 {
 		t.Fatalf("following = %v, want only the remote welcome", v.Following)
+	}
+}
+
+func TestStatsLeaveOutWelcome(t *testing.T) {
+	f := newFixture(t)
+	f.user(t, 1, nil)
+	f.magazine(t, 10, nil)
+	f.magazine(t, 11, row{"name": "Welcome"}) // Mbin matches magazine names in any case
+	f.entry(t, 1, 1, 10, nil)
+	f.entry(t, 2, 1, 11, nil)
+	f.post(t, 1, 1, 11, nil)
+	f.entryComment(t, 1, 1, 2, 11, nil)
+	f.postComment(t, 1, 1, 1, 11, nil)
+	f.entryComment(t, 2, 1, 1, 10, nil)
+	got, err := f.source(t).Stats(context.Background(), from, to)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.NewThreads != 1 || got.Comments != 1 {
+		t.Fatalf("stats = %+v, want 1 thread and 1 comment outside /m/welcome", got)
+	}
+}
+
+func TestActiveCountsLocalContentOnly(t *testing.T) {
+	f := newFixture(t)
+	f.user(t, 1, nil)
+	f.user(t, 9, row{"ap_id": "https://remote.example.org/u/9"})
+	f.magazine(t, 10, nil)
+	f.entry(t, 100, 9, 10, row{"ap_id": "https://remote.example.org/t/1"})
+	f.post(t, 200, 9, 10, row{"ap_id": "https://remote.example.org/p/1"})
+	f.entryComment(t, 300, 1, 100, 10, nil)
+	f.postComment(t, 400, 1, 200, 10, nil)
+	f.exec(t, `INSERT INTO entry_vote VALUES (1, 100, 1, $1)`, mid)
+	f.exec(t, `INSERT INTO post_vote VALUES (1, 200, 1, $1)`, mid)
+	f.entry(t, 101, 1, 10, nil)
+	f.entryComment(t, 301, 1, 101, 10, nil)
+	rs, err := f.source(t).Active(context.Background(), from)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rs) != 1 || rs[0].Score != 2 {
+		t.Fatalf("active = %+v, want member 1 scoring only the local thread and comment", rs)
+	}
+}
+
+func TestNewcomersAscendingSkipsWelcomed(t *testing.T) {
+	f := newFixture(t)
+	for id := 1; id <= 6; id++ {
+		f.user(t, id, row{"created_at": mid.Add(time.Duration(id) * time.Minute)})
+	}
+	ns, err := f.source(t).Newcomers(context.Background(), mid, []int64{1, 3}, 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var ids []int64
+	for _, n := range ns {
+		ids = append(ids, n.ID)
+	}
+	if !slices.Equal(ids, []int64{2, 4}) {
+		t.Fatalf("newcomers = %v, want [2 4]", ids)
+	}
+}
+
+func TestWelcomeThread(t *testing.T) {
+	f := newFixture(t)
+	f.user(t, 1, nil)
+	f.magazine(t, 10, nil)
+	f.magazine(t, 11, row{"name": "welcome"})
+	f.entry(t, 100, 1, 10, row{"title": "Welcome @a"})
+	f.entry(t, 101, 1, 11, row{"title": "Welcome @a", "created_at": old})
+	f.entry(t, 102, 1, 11, row{"title": "Welcome @a", "slug": "welcome-a"})
+	s := f.source(t)
+	id, slug, found, err := s.WelcomeThread(context.Background(), "Welcome @a", from)
+	if err != nil || !found || id != 102 || slug != "welcome-a" {
+		t.Fatalf("WelcomeThread = %d %q %v %v", id, slug, found, err)
+	}
+	if _, _, found, _ := s.WelcomeThread(context.Background(), "Welcome @b", from); found {
+		t.Fatal("found a thread that names someone else")
 	}
 }

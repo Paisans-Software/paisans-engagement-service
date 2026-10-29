@@ -2,6 +2,9 @@
 -- tables and columns in Allowlist, with Mbin's types. A query that reaches
 -- for anything outside the allowlist fails here before it fails at apply.
 
+-- Mbin's own enum type for application_status (migrations/Version20241104162329.php).
+CREATE TYPE enumApplicationStatus AS ENUM ('Approved', 'Rejected', 'Pending');
+
 CREATE TABLE "user" (
     id                     INT PRIMARY KEY,
     username               VARCHAR(255) NOT NULL,
@@ -16,7 +19,7 @@ CREATE TABLE "user" (
     oauth_oidc_id          VARCHAR(255),
     last_active            TIMESTAMPTZ,
     created_at             TIMESTAMPTZ NOT NULL,
-    application_status     TEXT NOT NULL DEFAULT 'Approved'
+    application_status     enumApplicationStatus NOT NULL DEFAULT 'Approved'
 );
 
 CREATE TABLE magazine (
