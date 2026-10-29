@@ -141,14 +141,19 @@ func (s *Source) Unanswered(ctx context.Context, from, to time.Time) ([]digest.I
 }
 
 // dress fills in what a scanned item shows: its kind, its title, a post's
-// body cut down to one, and its link.
+// body cut down to one without its links, and its link.
 func (s *Source) dress(it *digest.Item, kind string, slug, text *string) {
 	it.Key.Kind = digest.Kind(kind)
 	if text != nil {
 		it.Title = *text
 	}
 	if it.Key.Kind == digest.KindPost {
-		it.Title = digest.Plain(it.Title, titleRunes)
+		body := it.Title
+		it.Title = digest.Plain(body, titleRunes)
+		// A post that is only a link is named by where it points.
+		if h := digest.Host(body); it.Title == "" && h != "" {
+			it.Title = h + "…"
+		}
 	} else {
 		it.Title = oneLine(it.Title)
 	}

@@ -258,6 +258,16 @@ func TestPlain(t *testing.T) {
 		{"nested emphasis", "**bold *and em***"},
 		{"adjacent underscore pairs", "_a_ _b_ and __c__ __d__"},
 		{"adjacent asterisk pairs", "*a* *b* and **c** **d** and ~~e~~ ~~f~~"},
+		{"bare url at the end", "Hi, this is a post. I wonder how it differs from a thread. https://www.reddit.com/r/startrekmemes/comments/14glor3/were_a_strange_bunch_i_love_it/"},
+		{"url in parentheses after a bang", "Hi, this is a post. I wonder how it differs from a thread. !(https://www.reddit.com/r/startrekmemes/comments/14glor3/were_a_strange_bunch_i_love_it/)"},
+		{"bare url mid text", "see https://example.org/a, then go"},
+		{"bare url with parentheses", "read https://en.wikipedia.org/wiki/Go_(language) first"},
+		{"autolink", "docs at <https://example.org> today"},
+		{"link whose text is its url", "[https://example.org](https://example.org) is good"},
+		{"link with no text", "look [](https://example.org)"},
+		{"image with no alt", "look ![](https://example.org/i.png)"},
+		{"only a url", "https://example.org"},
+		{"parentheses beside a url", "call f() at https://example.org"},
 	}
 	want := []string{
 		"see the docs now",
@@ -277,6 +287,16 @@ func TestPlain(t *testing.T) {
 		"bold and em",
 		"a b and c d",
 		"a b and c d and e f",
+		"Hi, this is a post. I wonder how it differs from a thread…",
+		"Hi, this is a post. I wonder how it differs from a thread…",
+		"see, then go…",
+		"read first…",
+		"docs at today…",
+		"is good…",
+		"look…",
+		"look…",
+		"",
+		"call f() at…",
 	}
 	for i, c := range cases {
 		if got := Plain(c.in, 200); got != want[i] {
@@ -295,6 +315,9 @@ func TestPlain(t *testing.T) {
 	}
 	if got := Plain("supercalifragilistic", 8); got != "superca…" {
 		t.Fatalf("got %q", got)
+	}
+	if got := Plain("one two. three", 10); got != "one two…" {
+		t.Fatalf("cut after a full stop: got %q", got)
 	}
 	if got := Plain("exactly ten", 11); got != "exactly ten" {
 		t.Fatalf("got %q", got)
@@ -482,5 +505,19 @@ func TestUnansweredHeading(t *testing.T) {
 	d.AddUnanswered(nil, View{}, seeded(1))
 	if d.UnansweredHeading != "" {
 		t.Fatalf("heading %q with no section", d.UnansweredHeading)
+	}
+}
+
+func TestHost(t *testing.T) {
+	cases := map[string]string{
+		"https://www.reddit.com/r/startrekmemes/comments/14glor3/": "reddit.com",
+		"see !(http://Example.org:8080/a) and https://other.net":   "example.org",
+		"![](https://media.example.org/i.png)":                     "media.example.org",
+		"no links here":                                            "",
+	}
+	for in, want := range cases {
+		if got := Host(in); got != want {
+			t.Errorf("Host(%q) = %q, want %q", in, got, want)
+		}
 	}
 }
