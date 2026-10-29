@@ -56,7 +56,7 @@ func TestMatrixPreview(t *testing.T) {
 	if !strings.HasPrefix(d.TxnID, "preview-") || d.TxnID == bot.TxnID("sub-1", week) {
 		t.Fatalf("txn id %q", d.TxnID)
 	}
-	if !strings.HasPrefix(d.Notice.Body, "[Preview] Your weekly digest from Talk · Example Community") ||
+	if !strings.HasPrefix(d.Notice.Body, "[Preview] This week on Talk · Example Community") ||
 		!strings.Contains(d.Notice.Body, "• grinders") {
 		t.Fatalf("body %q", d.Notice.Body)
 	}

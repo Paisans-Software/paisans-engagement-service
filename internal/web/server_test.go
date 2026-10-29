@@ -187,7 +187,7 @@ func TestWebDigest(t *testing.T) {
 		t.Fatalf("status = %d", rec.Code)
 	}
 	body := rec.Body.String()
-	for _, want := range []string{"grinders", "See everything on Talk", "Oct 12 – Oct 18"} {
+	for _, want := range []string{"grinders", "View Everything", "Oct 12 – Oct 18"} {
 		if !strings.Contains(body, want) {
 			t.Errorf("body lacks %q", want)
 		}
