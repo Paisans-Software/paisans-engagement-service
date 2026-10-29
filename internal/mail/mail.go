@@ -12,8 +12,9 @@ import (
 	"github.com/paisans-software/paisans-engagement-service/internal/config"
 )
 
-// Message is one rendered digest for one member. Unsubscribe is the absolute
-// URL behind both the footer link and the List-Unsubscribe headers.
+// Message is one rendered email for one member. Unsubscribe is the absolute
+// URL behind both the footer link and the List-Unsubscribe headers; an
+// operator alert has none, and then no such headers.
 type Message struct {
 	To, Subject, Text, HTML, Unsubscribe string
 }
@@ -80,8 +81,10 @@ func (s *smtpSender) Send(ctx context.Context, msg Message) error {
 	m.SetBodyString(gomail.TypeTextPlain, msg.Text)
 	m.AddAlternativeString(gomail.TypeTextHTML, msg.HTML)
 	// One click unsubscribe, so mail clients can offer their own button.
-	m.SetGenHeader("List-Unsubscribe", "<"+msg.Unsubscribe+">")
-	m.SetGenHeader("List-Unsubscribe-Post", "List-Unsubscribe=One-Click")
+	if msg.Unsubscribe != "" {
+		m.SetGenHeader("List-Unsubscribe", "<"+msg.Unsubscribe+">")
+		m.SetGenHeader("List-Unsubscribe-Post", "List-Unsubscribe=One-Click")
+	}
 
 	// Dial, send and close are separate steps, so a failure to connect is
 	// told apart from one after the message was handed over, and a failed
