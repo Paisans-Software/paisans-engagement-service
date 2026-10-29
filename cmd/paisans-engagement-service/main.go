@@ -114,7 +114,7 @@ func serve() error {
 		select {
 		case <-stopped:
 		case <-time.After(10 * time.Second):
-			slog.Warn("the digest run or the Digest Bot did not stop in time; a member may stay pending this week")
+			slog.Warn("the digest run or the Matrix bot did not stop in time; a member may stay pending this week")
 		}
 	}()
 
@@ -158,9 +158,10 @@ func serve() error {
 				Store:   st,
 				Members: src,
 				Config: bot.Config{
-					ServerName: cfg.Matrix.ServerName,
-					Provider:   cfg.Matrix.UpstreamProvider,
-					Localpart:  cfg.Matrix.BotLocalpart,
+					ServerName:  cfg.Matrix.ServerName,
+					Provider:    cfg.Matrix.UpstreamProvider,
+					Localpart:   cfg.Matrix.BotLocalpart,
+					DisplayName: cfg.Matrix.BotDisplayName,
 				},
 				Retry: time.Minute,
 			}

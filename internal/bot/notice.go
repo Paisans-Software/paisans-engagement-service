@@ -20,7 +20,7 @@ type Notice struct{ Body, FormattedBody string }
 const (
 	ReplyStopped = "Stopped. Reply start to get them again."
 	ReplyStarted = "Started. Your next digest comes on Monday."
-	ReplyHelp    = "Reply stop to stop these messages, or start to get them again."
+	ReplyHelp    = "Reply 'stop' to stop these messages, or start to get them again."
 )
 
 // Content is the message content to send.
@@ -45,11 +45,15 @@ type titled struct {
 	Post       bool
 }
 
+// stopLine ends the notice.
+const stopLine = "Reply 'stop' to stop these messages."
+
+// weeklyHTML separates the last lines with <br>, not paragraphs, so the blank
+// lines show even in a client that gives paragraphs and lists no margins.
 var weeklyHTML = template.Must(template.New("weekly").Parse(
 	`<p>{{.Mark}}Your weekly digest from {{.Meta}}</p>` +
 		`{{if .Items}}<ul>{{range .Items}}<li><a href="{{.URL}}">{{if .Post}}&ldquo;{{.Title}}&rdquo;{{else}}{{.Title}}{{end}}</a></li>{{end}}</ul>{{end}}` +
-		`<p>Read the whole digest: <a href="{{.Link}}">{{.Link}}</a></p>` +
-		`<p>Reply stop to stop these messages.</p>`))
+		`<br><a href="{{.Link}}">Read the whole digest</a><br><br>` + stopLine))
 
 // previewMark starts a preview notice.
 const previewMark = "[Preview] "
@@ -88,7 +92,7 @@ func weekly(d digest.Digest, meta, link, mark string) Notice {
 		}
 		lines = append(lines, "")
 	}
-	lines = append(lines, "Read the whole digest: "+link, "", "Reply stop to stop these messages.")
+	lines = append(lines, "Read the whole digest: "+link, "", stopLine)
 
 	var buf bytes.Buffer
 	data := struct {

@@ -175,12 +175,12 @@ func TestCreateSessionScope(t *testing.T) {
 	ctx := context.Background()
 	id := s.AddUser("digestbot", time.Now())
 	scope := "urn:matrix:client:api:* urn:matrix:client:device:DIGESTBOT"
-	sess, err := c.CreateSession(ctx, id, "Digest Bot", scope)
+	sess, err := c.CreateSession(ctx, id, "Community Bot", scope)
 	if err != nil || sess.Token == "" || sess.ID == "" {
 		t.Fatalf("CreateSession = %+v %v", sess, err)
 	}
 	recs := s.Sessions()
-	if len(recs) != 1 || recs[0].Scope != scope || recs[0].UserID != id || recs[0].HumanName != "Digest Bot" || recs[0].HasExpiresIn {
+	if len(recs) != 1 || recs[0].Scope != scope || recs[0].UserID != id || recs[0].HumanName != "Community Bot" || recs[0].HasExpiresIn {
 		t.Fatalf("recorded = %+v", recs)
 	}
 	tok, err := c.RegenerateSession(ctx, sess.ID)
@@ -193,7 +193,7 @@ func TestRegenerateGone(t *testing.T) {
 	c, s := newClient(t)
 	ctx := context.Background()
 	id := s.AddUser("digestbot", time.Now())
-	sess, _ := c.CreateSession(ctx, id, "Digest Bot", "urn:matrix:client:api:*")
+	sess, _ := c.CreateSession(ctx, id, "Community Bot", "urn:matrix:client:api:*")
 	s.RevokeSession(sess.ID)
 	if _, err := c.RegenerateSession(ctx, sess.ID); !errors.Is(err, mas.ErrSessionGone) {
 		t.Fatalf("err = %v, want ErrSessionGone", err)

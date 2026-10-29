@@ -168,7 +168,7 @@ func TestOnceSharedTokenRefused(t *testing.T) {
 func TestOnceTakenLocalpart(t *testing.T) {
 	e := newEnv(t)
 	ctx := context.Background()
-	e.mas.Link(provider, "sub-x", e.mas.AddUser("digest-bot", time.Now().Add(-time.Hour)))
+	e.mas.Link(provider, "sub-x", e.mas.AddUser("community-bot", time.Now().Add(-time.Hour)))
 	_, _, err := Once(ctx, e.deps())
 	if !errors.Is(err, ErrOff) || !strings.Contains(err.Error(), "ENGAGEMENT_MATRIX_BOT_LOCALPART") {
 		t.Fatalf("err = %v", err)

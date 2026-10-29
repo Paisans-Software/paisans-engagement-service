@@ -16,6 +16,7 @@ import (
 func TestCommandParsing(t *testing.T) {
 	for in, want := range map[string]string{
 		"stop": "stop", "STOP!": "stop", "  Start. ": "start", "\"resume\"": "start", "Restore": "start",
+		"'stop'": "stop", " 'STOP' ": "stop", "‘stop’": "stop", "“stop”": "stop", "‘Resume’": "start",
 		"stop please": "", "🛑": "", "": "", "start?!stop": "",
 	} {
 		if got := Command(in); got != want {
@@ -438,7 +439,7 @@ func TestStoreErrorSkippedAfterThreeAttempts(t *testing.T) {
 }
 
 func TestCommandOfReply(t *testing.T) {
-	fallback := "> <@digest-bot:example.org> Your weekly digest from Talk\n> \n> Reply stop to stop these messages.\n\nstop"
+	fallback := "> <@community-bot:example.org> Your weekly digest from Talk\n> \n> Reply 'stop' to stop these messages.\n\n'stop'"
 	if got := commandOf(fallback, true); got != "stop" {
 		t.Errorf("reply: %q", got)
 	}
@@ -454,7 +455,7 @@ func TestStopAsReply(t *testing.T) {
 	e, b, room := memberRoom(t)
 	prime(t, e)
 	c, _ := json.Marshal(map[string]any{"msgtype": "m.text",
-		"body":         "> <@digest-bot:example.org> Your weekly digest\n\nstop",
+		"body":         "> <@community-bot:example.org> Your weekly digest\n\nstop",
 		"m.relates_to": map[string]any{"m.in_reply_to": map[string]string{"event_id": "$notice"}}})
 	ev := fmt.Sprintf(`{"type":"m.room.message","event_id":"$1","sender":"@one:example.org","content":%s}`, c)
 	syncOf(e, b, [2]string{"b1", joined(room, ev)})

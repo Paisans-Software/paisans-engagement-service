@@ -80,7 +80,7 @@ func send(ctx context.Context, args []string, getenv func(string) string, now fu
 	}
 	if opts.matrix {
 		if missing := cfg.Matrix.Missing(); len(missing) > 0 {
-			return fmt.Errorf("the Digest Bot is not configured: %s not set", strings.Join(missing, ", "))
+			return fmt.Errorf("the Matrix bot is not configured: %s not set", strings.Join(missing, ", "))
 		}
 	} else if cfg.SMTP.Host == "" {
 		return errors.New("ENGAGEMENT_SMTP_HOST is not set, so there is no mail host to send through")
@@ -126,7 +126,7 @@ func send(ctx context.Context, args []string, getenv func(string) string, now fu
 }
 
 // sendMatrix sends the member's Matrix notice for the week, or its preview,
-// as the Digest Bot. bot.Once decides how this process acts as the bot: with
+// as the Matrix bot. bot.Once decides how this process acts as the bot: with
 // the bot lock, held only for this send, when no copy of the service runs the
 // bot, and otherwise with the running bot's stored token, leaving the
 // service's lock and listener alone.
@@ -137,13 +137,14 @@ func sendMatrix(ctx context.Context, cfg config.Config, st *store.Store, src *mb
 		Store:   st,
 		Members: src,
 		Config: bot.Config{
-			ServerName: cfg.Matrix.ServerName,
-			Provider:   cfg.Matrix.UpstreamProvider,
-			Localpart:  cfg.Matrix.BotLocalpart,
+			ServerName:  cfg.Matrix.ServerName,
+			Provider:    cfg.Matrix.UpstreamProvider,
+			Localpart:   cfg.Matrix.BotLocalpart,
+			DisplayName: cfg.Matrix.BotDisplayName,
 		},
 	})
 	if err != nil {
-		return fmt.Errorf("the Digest Bot cannot start: %w", err)
+		return fmt.Errorf("the Matrix bot cannot start: %w", err)
 	}
 	defer done()
 	runner.Matrix = func() run.DM { return b }

@@ -26,15 +26,15 @@ type Source interface {
 	Stats(ctx context.Context, from, to time.Time) (digest.Stats, error)
 }
 
-// DM is the Digest Bot as the run uses it.
+// DM is the Matrix bot as the run uses it.
 type DM interface {
 	Prepare(ctx context.Context, subject string) (bot.Target, bool, error)
 	Deliver(ctx context.Context, t bot.Target, txnID string, n bot.Notice) (bot.Outcome, error)
 }
 
-// ErrBotNotReady means the Digest Bot is configured but still starting, so
+// ErrBotNotReady means the Matrix bot is configured but still starting, so
 // the Matrix half of the run waits for the next attempt.
-var ErrBotNotReady = errors.New("the Digest Bot is not ready")
+var ErrBotNotReady = errors.New("the Matrix bot is not ready")
 
 type Runner struct {
 	Store  *store.Store
@@ -46,7 +46,7 @@ type Runner struct {
 	PublicURL string
 	Key       []byte
 
-	// Matrix is nil, or returns nil, when this copy runs no Digest Bot.
+	// Matrix is nil, or returns nil, when this copy runs no Matrix bot.
 	Matrix func() DM
 	// MatrixConfigured is true when every Matrix variable is set.
 	MatrixConfigured bool
@@ -102,7 +102,7 @@ func (r *Runner) now() time.Time {
 // fails the pass, so the next attempt delivers once it is up.
 //
 // Both passes always run; Week returns their errors joined. A copy that runs
-// no Digest Bot, while another copy holds it, skips the Matrix pass without an
+// no Matrix bot, while another copy holds it, skips the Matrix pass without an
 // error; Loop sends it later the same day if this copy takes the bot over.
 func (r *Runner) Week(ctx context.Context, week time.Time) error {
 	_, err := r.week(ctx, week)
@@ -156,7 +156,7 @@ func (r *Runner) week(ctx context.Context, week time.Time) (*matrixHalf, error) 
 	return later, errors.Join(emailErr, matrixErr)
 }
 
-// bot is the Digest Bot this copy runs, or nil.
+// bot is the Matrix bot this copy runs, or nil.
 func (r *Runner) bot() DM {
 	if r.Matrix == nil {
 		return nil
@@ -168,7 +168,7 @@ func (r *Runner) bot() DM {
 // so the run is tried again; one that another copy runs is not.
 func (r *Runner) noBot() error {
 	if r.MatrixPending != nil && r.MatrixPending() {
-		slog.Warn("the Digest Bot is still starting; the Matrix notices wait for the next attempt")
+		slog.Warn("the Matrix bot is still starting; the Matrix notices wait for the next attempt")
 		return fmt.Errorf("matrix run: %w", ErrBotNotReady)
 	}
 	return nil
@@ -482,7 +482,7 @@ func (r *Runner) matrixPass(ctx context.Context, members []digest.Member, week t
 		// The bot lock may have moved since the pass began; only the copy
 		// that holds it now sends.
 		if cur := r.bot(); cur != dm {
-			slog.Info("the Digest Bot changed during the Matrix run; the remaining notices wait for it", "week", week.Format("2006-01-02"))
+			slog.Info("the Matrix bot changed during the Matrix run; the remaining notices wait for it", "week", week.Format("2006-01-02"))
 			if err := r.noBot(); err != nil {
 				fail(err)
 				return nil, firstErr
@@ -660,7 +660,7 @@ func (r *Runner) PreviewMatrix(ctx context.Context, week time.Time, username str
 	case err != nil:
 		return fmt.Errorf("matrix preview: %w", err)
 	case out == bot.Off:
-		return errors.New("the member stopped the Digest Bot's messages, so no preview is sent")
+		return errors.New("the member stopped the Matrix bot's messages, so no preview is sent")
 	case out == bot.Refused:
 		return errors.New("the homeserver refused the preview")
 	case out != bot.Sent:
@@ -713,14 +713,14 @@ func (r *Runner) matrixMember(ctx context.Context, username string) (digest.Memb
 	}
 	dm := r.bot()
 	if dm == nil {
-		return m, nil, errors.New("the Digest Bot is not running, so nothing is sent")
+		return m, nil, errors.New("the Matrix bot is not running, so nothing is sent")
 	}
 	mm, err := r.Store.MatrixMember(ctx, m.Subject)
 	if err != nil {
 		return m, nil, fmt.Errorf("read the Matrix setting: %w", err)
 	}
 	if !mm.Enabled {
-		return m, nil, errors.New("the member stopped the Digest Bot's messages, so nothing is sent")
+		return m, nil, errors.New("the member stopped the Matrix bot's messages, so nothing is sent")
 	}
 	return m, dm, nil
 }

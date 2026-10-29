@@ -9,7 +9,7 @@ import (
 )
 
 // Once gives a process that does not supervise the bot, such as the send
-// command, the Digest Bot for one send. done must be called once the send is
+// command, the Matrix bot for one send. done must be called once the send is
 // over.
 //
 // When no copy of the service holds the bot lock, Once takes it, starts the
@@ -46,7 +46,7 @@ func Once(ctx context.Context, d Deps) (b *Bot, done func(), err error) {
 // errNotStarted is the refusal while the running service's bot has no
 // account or token under the configured localpart.
 func errNotStarted(localpart string) error {
-	return fmt.Errorf("the service holds the Digest Bot but has not started it as %q; see the service's log", localpart)
+	return fmt.Errorf("the service holds the Matrix bot but has not started it as %q; see the service's log", localpart)
 }
 
 // attach is the bot the running service holds, acting with its stored token.
@@ -77,7 +77,7 @@ func attach(ctx context.Context, d Deps) (*Bot, error) {
 	user, device, err := b.m.WhoAmI(ctx)
 	if err != nil {
 		if matrix.IsCode(err, "M_UNKNOWN_TOKEN") || unauthorized(err) {
-			return nil, fmt.Errorf("%w: the homeserver refuses the running Digest Bot's token; try again once the service has renewed it", ErrUnavailable)
+			return nil, fmt.Errorf("%w: the homeserver refuses the running Matrix bot's token; try again once the service has renewed it", ErrUnavailable)
 		}
 		return nil, wrap(err)
 	}

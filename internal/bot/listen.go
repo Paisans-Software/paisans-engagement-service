@@ -26,7 +26,8 @@ const (
 	maxAttempts = 3
 )
 
-// Command reduces a member's message to "stop", "start" or "".
+// Command reduces a member's message to "stop", "start" or "". Surrounding
+// punctuation is trimmed, so 'stop', ‘stop’ and "stop" are stop too.
 func Command(body string) string {
 	body = strings.ToLower(strings.TrimFunc(body, func(r rune) bool {
 		return unicode.IsSpace(r) || unicode.IsPunct(r)

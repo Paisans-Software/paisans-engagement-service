@@ -1,4 +1,4 @@
-// Package bot runs the Digest Bot: its Matrix account, its token and, in
+// Package bot runs the Matrix bot: its Matrix account, its token and, in
 // later files, the rooms and messages it keeps.
 package bot
 
@@ -16,8 +16,6 @@ import (
 )
 
 const (
-	// DisplayName is the bot's profile name.
-	DisplayName = "Digest Bot"
 	// Device is the bot's fixed device id. Synapse keys its persisted send
 	// deduplication by device, so a retried send survives a new token.
 	Device = "DIGESTBOT"
@@ -40,8 +38,9 @@ const (
 // may fall and still count as the answer to that intent.
 const intentSlack = 5 * time.Minute
 
-// Config is what Start needs to know about this deployment.
-type Config struct{ ServerName, Provider, Localpart string }
+// Config is what Start needs to know about this deployment. DisplayName is
+// the bot's profile name, which Start sets whenever the profile differs.
+type Config struct{ ServerName, Provider, Localpart, DisplayName string }
 
 // MemberChecker reports whether an OIDC subject is a current member.
 type MemberChecker interface {
@@ -55,7 +54,7 @@ var (
 	ErrUnavailable = errors.New("matrix unavailable")
 )
 
-// Bot is a started Digest Bot.
+// Bot is a started Matrix bot.
 type Bot struct {
 	m       *matrix.Client
 	a       *mas.Client
@@ -127,8 +126,8 @@ func Start(ctx context.Context, m *matrix.Client, a *mas.Client, st *store.Store
 	if err != nil {
 		return nil, wrap(err)
 	}
-	if name != DisplayName {
-		if err := m.SetDisplayName(ctx, b.userID, DisplayName); err != nil {
+	if name != cfg.DisplayName {
+		if err := m.SetDisplayName(ctx, b.userID, cfg.DisplayName); err != nil {
 			return nil, wrap(err)
 		}
 	}
@@ -136,7 +135,7 @@ func Start(ctx context.Context, m *matrix.Client, a *mas.Client, st *store.Store
 }
 
 func (b *Bot) takenErr() error {
-	return off("the MAS username %q is not the Digest Bot's; set ENGAGEMENT_MATRIX_BOT_LOCALPART "+
+	return off("the MAS username %q is not the Matrix bot's; set ENGAGEMENT_MATRIX_BOT_LOCALPART "+
 		"(the engagement app's bot_localpart setting) to a name no one uses", b.cfg.Localpart)
 }
 
@@ -208,7 +207,22 @@ func (b *Bot) lostCreate(ctx context.Context, u mas.User) (bool, error) {
 }
 
 // adopt records the account as ours and forgets the state of any earlier one.
+// An earlier account under another localpart is another Matrix user, so its
+// sync position and the members' rooms, which only it is in, go too; the
+// members' settings and sends are theirs and stay.
 func (b *Bot) adopt(ctx context.Context, masUserID string) error {
+	lp, ok, err := b.st.BotState(ctx, keyLocalpart)
+	if err != nil {
+		return err
+	}
+	if ok && lp != b.cfg.Localpart {
+		if err := b.st.DeleteBotState(ctx, keySyncToken); err != nil {
+			return err
+		}
+		if err := b.st.ForgetMatrixRooms(ctx); err != nil {
+			return err
+		}
+	}
 	for k, v := range map[string]string{keyMASUser: masUserID, keyLocalpart: b.cfg.Localpart} {
 		if err := b.st.SetBotState(ctx, k, v); err != nil {
 			return err
@@ -292,7 +306,7 @@ func (b *Bot) renew(ctx context.Context, stale string) error {
 		if err != nil {
 			return err
 		}
-		s, err := b.a.CreateSession(ctx, masUser, DisplayName, Scope)
+		s, err := b.a.CreateSession(ctx, masUser, b.cfg.DisplayName, Scope)
 		if err != nil {
 			return err
 		}

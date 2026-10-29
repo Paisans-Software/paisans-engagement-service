@@ -9,6 +9,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"unicode/utf8"
 )
 
 type SMTP struct {
@@ -23,8 +24,9 @@ type SMTP struct {
 	TLS      string
 }
 
-// Matrix configures the Digest Bot. The bot runs only when all seven
-// variables are set; with fewer, the service behaves as it does without Matrix.
+// Matrix configures the bot. The bot runs only when all seven variables are
+// set; with fewer, the service behaves as it does without Matrix. The display
+// name is optional and not one of the seven.
 type Matrix struct {
 	// URL is the homeserver's public address; ServerName is the part after
 	// the colon in Matrix ids.
@@ -35,7 +37,17 @@ type Matrix struct {
 	// UpstreamProvider is the id of the identity provider members sign in
 	// with; BotLocalpart is the bot's Matrix user name.
 	UpstreamProvider, BotLocalpart string
+	// BotDisplayName is the bot's profile name, DefaultBotDisplayName when
+	// ENGAGEMENT_MATRIX_BOT_DISPLAY_NAME is unset or empty.
+	BotDisplayName string
 }
+
+const (
+	// DefaultBotDisplayName is the bot's profile name unless configured.
+	DefaultBotDisplayName = "Community Bot"
+	// maxDisplayName bounds the configured display name, in characters.
+	maxDisplayName = 256
+)
 
 // variable is an environment variable's name and value.
 type variable struct{ name, value string }
@@ -146,6 +158,12 @@ func Load(getenv func(string) string) (Config, error) {
 		ClientSecret:     getenv("ENGAGEMENT_MAS_CLIENT_SECRET"),
 		UpstreamProvider: getenv("ENGAGEMENT_MAS_UPSTREAM_PROVIDER"),
 		BotLocalpart:     getenv("ENGAGEMENT_MATRIX_BOT_LOCALPART"),
+		BotDisplayName:   DefaultBotDisplayName,
+	}
+	// A display name of only spaces is set, not empty, and refused below.
+	displayName := getenv("ENGAGEMENT_MATRIX_BOT_DISPLAY_NAME")
+	if displayName != "" {
+		c.Matrix.BotDisplayName = strings.TrimSpace(displayName)
 	}
 	// Without a mail host nothing is sent, so a sender address is only
 	// needed once there is one.
@@ -212,6 +230,15 @@ func (m Matrix) validate() []error {
 		{"ENGAGEMENT_MATRIX_URL", m.URL},
 		{"ENGAGEMENT_MAS_ADMIN_URL", m.MASAdminURL},
 	})...)
+	const name = "ENGAGEMENT_MATRIX_BOT_DISPLAY_NAME"
+	switch n := utf8.RuneCountInString(m.BotDisplayName); {
+	case n == 0:
+		errs = append(errs, errors.New(name+" must not be blank"))
+	case n > maxDisplayName:
+		errs = append(errs, fmt.Errorf("%s must be at most %d characters", name, maxDisplayName))
+	case strings.ContainsAny(m.BotDisplayName, "\r\n"):
+		errs = append(errs, errors.New(name+" must be one line"))
+	}
 	if !localpartRE.MatchString(m.BotLocalpart) {
 		errs = append(errs, errors.New("ENGAGEMENT_MATRIX_BOT_LOCALPART must be lower case letters, digits and . _ = / -"))
 	}
