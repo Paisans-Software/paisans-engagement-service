@@ -1,0 +1,11 @@
+{{.Heading}}
+
+These people just joined {{.Meta}}. A hello from you goes a long way.
+{{range .Lines}}
+{{.Name}}
+{{.URL}}
+{{end}}
+Say hello: {{.MagazineURL}}
+
+You get this because you're one of the members of {{.Meta}} who welcomes new people.
+Unsubscribe from welcome emails: {{.Unsubscribe}}
