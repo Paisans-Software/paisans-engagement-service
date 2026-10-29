@@ -1,5 +1,5 @@
 // Package matrixtest is a fake homeserver speaking the slice of the Matrix
-// client-server API that the Digest Bot uses.
+// client-server API that the Matrix bot uses.
 package matrixtest
 
 import (

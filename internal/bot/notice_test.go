@@ -25,13 +25,20 @@ func TestWeeklyBody(t *testing.T) {
 	}
 	n := Weekly(d, "Talk · Example", "https://web/d/tok")
 	want := "Your weekly digest from Talk · Example\n\n• Grinders\n• \"A post\"\n• Beans\n• Kettles\n• Filters\n\n" +
-		"Read the whole digest: https://web/d/tok\n\nReply stop to stop these messages."
+		"Read the whole digest: https://web/d/tok\n\nReply 'stop' to stop these messages."
 	if n.Body != want {
 		t.Fatalf("body = %q", n.Body)
 	}
+	wantHTML := `<p>Your weekly digest from Talk · Example</p><ul>` +
+		`<li><a href="https://t/1">Grinders</a></li><li><a href="https://t/2">&ldquo;A post&rdquo;</a></li>` +
+		`<li><a href="https://t/3">Beans</a></li><li><a href="https://t/4">Kettles</a></li>` +
+		`<li><a href="https://t/5">Filters</a></li></ul>` +
+		`<br><a href="https://web/d/tok">Read</a> the whole digest.<br><br>Reply 'stop' to stop these messages.`
+	if n.FormattedBody != wantHTML {
+		t.Fatalf("formatted = %q", n.FormattedBody)
+	}
 	if !strings.Contains(n.FormattedBody, `<li><a href="https://t/3">Beans</a></li>`) ||
 		!strings.Contains(n.FormattedBody, `<li><a href="https://t/2">&ldquo;A post&rdquo;</a></li>`) ||
-		!strings.Contains(n.FormattedBody, `<p>Read the whole digest: <a href="https://web/d/tok">https://web/d/tok</a></p>`) ||
 		strings.Contains(n.FormattedBody, "Scales") {
 		t.Fatalf("formatted = %q", n.FormattedBody)
 	}
@@ -41,7 +48,7 @@ func TestWeeklyBody(t *testing.T) {
 func TestWeeklyOnlyPosts(t *testing.T) {
 	d := digest.Digest{More: []digest.Item{item(digest.KindPost, "P", "u")}}
 	n := Weekly(d, "Talk · Example", "L")
-	want := "Your weekly digest from Talk · Example\n\n• \"P\"\n\nRead the whole digest: L\n\nReply stop to stop these messages."
+	want := "Your weekly digest from Talk · Example\n\n• \"P\"\n\nRead the whole digest: L\n\nReply 'stop' to stop these messages."
 	if n.Body != want {
 		t.Fatalf("body = %q", n.Body)
 	}
@@ -52,8 +59,10 @@ func TestWeeklyOnlyPosts(t *testing.T) {
 
 func TestWeeklyEmpty(t *testing.T) {
 	n := Weekly(digest.Digest{}, "Talk · Example", "L")
-	want := "Your weekly digest from Talk · Example\n\nRead the whole digest: L\n\nReply stop to stop these messages."
-	if n.Body != want || strings.Contains(n.FormattedBody, "<ul>") {
+	want := "Your weekly digest from Talk · Example\n\nRead the whole digest: L\n\nReply 'stop' to stop these messages."
+	wantHTML := `<p>Your weekly digest from Talk · Example</p>` +
+		`<br><a href="L">Read</a> the whole digest.<br><br>Reply 'stop' to stop these messages.`
+	if n.Body != want || n.FormattedBody != wantHTML {
 		t.Fatalf("notice = %q / %q", n.Body, n.FormattedBody)
 	}
 }
@@ -102,7 +111,7 @@ func TestWeeklyPreview(t *testing.T) {
 	d := digest.Digest{Featured: &digest.Featured{Item: item(digest.KindEntry, "Grinders", "https://t/1")}}
 	n := WeeklyPreview(d, "Talk", "https://web/d/tok")
 	want := "[Preview] Your weekly digest from Talk\n\n• Grinders\n\n" +
-		"Read the whole digest: https://web/d/tok\n\nReply stop to stop these messages."
+		"Read the whole digest: https://web/d/tok\n\nReply 'stop' to stop these messages."
 	if n.Body != want {
 		t.Fatalf("body = %q", n.Body)
 	}

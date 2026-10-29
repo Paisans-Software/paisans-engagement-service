@@ -27,7 +27,7 @@ const wantRoomBody = `{"preset":"private_chat","is_direct":true,"invite":["@one:
 // keys it names.
 func TestCreateDirectRoomBody(t *testing.T) {
 	c, srv, _ := newClient(t, fast)
-	id, err := c.CreateDirectRoom(context.Background(), "@digest-bot:example.org", "@one:example.org")
+	id, err := c.CreateDirectRoom(context.Background(), "@community-bot:example.org", "@one:example.org")
 	if err != nil || id == "" {
 		t.Fatalf("CreateDirectRoom = %q, %v", id, err)
 	}

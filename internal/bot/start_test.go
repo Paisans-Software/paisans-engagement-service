@@ -20,7 +20,7 @@ import (
 const (
 	serverName = "example.org"
 	provider   = "01PROVIDER"
-	botUser    = "@digest-bot:example.org"
+	botUser    = "@community-bot:example.org"
 )
 
 type env struct {
@@ -33,7 +33,7 @@ type env struct {
 func newEnv(t *testing.T) *env {
 	t.Helper()
 	e := &env{mas: mastest.New(t), syn: matrixtest.New(t, serverName), st: storetest.New(t),
-		cfg: Config{ServerName: serverName, Provider: provider, Localpart: "digest-bot"}}
+		cfg: Config{ServerName: serverName, Provider: provider, Localpart: "community-bot", DisplayName: "Community Bot"}}
 	e.mas.AddProvider(provider)
 	e.syn.TokenEndpoint = e.mas.TokenURL()
 	e.syn.Accept(func(token string) (string, string, bool) {
@@ -73,17 +73,20 @@ func TestStartCreatesBot(t *testing.T) {
 		t.Fatalf("UserID = %q", b.UserID())
 	}
 	users := e.mas.Users()
-	if len(users) != 1 || users[0].Username != "digest-bot" {
+	if len(users) != 1 || users[0].Username != "community-bot" {
 		t.Fatalf("users = %+v", users)
 	}
 	ss := e.mas.Sessions()
 	if len(ss) != 1 || ss[0].Scope != Scope || ss[0].HasExpiresIn || ss[0].UserID != users[0].ID {
 		t.Fatalf("sessions = %+v", ss)
 	}
-	if got := e.syn.Profile(botUser); got != DisplayName {
+	if got := e.syn.Profile(botUser); got != "Community Bot" {
 		t.Fatalf("profile = %q", got)
 	}
-	for k, want := range map[string]string{"mas_user_id": users[0].ID, "localpart": "digest-bot",
+	if ss[0].HumanName != "Community Bot" {
+		t.Fatalf("session name = %q", ss[0].HumanName)
+	}
+	for k, want := range map[string]string{"mas_user_id": users[0].ID, "localpart": "community-bot",
 		"session_id": ss[0].ID, "access_token": ss[0].Token} {
 		if got := e.state(t, k); got != want {
 			t.Errorf("state %s = %q, want %q", k, got, want)
@@ -134,15 +137,131 @@ func TestStartReusesEverything(t *testing.T) {
 	}
 }
 
+// A bot started under another name, such as its old default, is renamed to
+// the configured one at the next start.
+func TestStartRenamesBot(t *testing.T) {
+	e := newEnv(t)
+	b, err := e.start(t)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := b.m.SetDisplayName(context.Background(), botUser, "Digest Bot"); err != nil {
+		t.Fatal(err)
+	}
+	e.cfg.DisplayName = "Paisans Bot"
+	if _, err := e.start(t); err != nil {
+		t.Fatal(err)
+	}
+	if got := e.syn.Profile(botUser); got != "Paisans Bot" {
+		t.Fatalf("profile = %q", got)
+	}
+	if n := e.syn.ProfileWrites(); n != 3 {
+		t.Fatalf("profile writes = %d, want 3", n)
+	}
+}
+
+// A new localpart makes a new bot: its own account and token, no sync
+// position and no member rooms, which belonged to the old bot. Members'
+// settings and the week's sends are kept.
+func TestStartNewLocalpart(t *testing.T) {
+	e := newEnv(t)
+	e.syn.Accept(func(token string) (string, string, bool) {
+		for _, s := range e.mas.Sessions() {
+			for _, u := range e.mas.Users() {
+				if s.Token == token && u.ID == s.UserID {
+					return "@" + u.Username + ":" + serverName, "DIGESTBOT", true
+				}
+			}
+		}
+		return "", "", false
+	})
+	ctx := context.Background()
+	e.cfg.Localpart = "digest-bot"
+	if _, err := e.start(t); err != nil {
+		t.Fatal(err)
+	}
+	old := map[string]string{"mas_user_id": e.state(t, "mas_user_id"), "session_id": e.state(t, "session_id"),
+		"access_token": e.state(t, "access_token")}
+	week := time.Date(2026, 10, 26, 0, 0, 0, 0, time.UTC)
+	for _, err := range []error{
+		e.st.SetBotState(ctx, keySyncToken, "s1"),
+		e.st.SetMatrixAccount(ctx, "sub-1", "01ONE", "@one:example.org"),
+		e.st.SetMatrixRoom(ctx, "sub-1", "!dm1:example.org"),
+		e.st.SetMatrixRoom(ctx, "sub-2", "!dm2:example.org"),
+		e.st.SetMatrixEnabled(ctx, "sub-2", false),
+	} {
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	if ok, err := e.st.ClaimDM(ctx, "sub-1", week); !ok || err != nil {
+		t.Fatalf("claim: %v %v", ok, err)
+	}
+	if err := e.st.FinishDM(ctx, "sub-1", week, store.StatusSent); err != nil {
+		t.Fatal(err)
+	}
+
+	e.cfg.Localpart = "community-bot"
+	b, err := e.start(t)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if b.UserID() != "@community-bot:example.org" {
+		t.Fatalf("UserID = %q", b.UserID())
+	}
+	if e.state(t, "localpart") != "community-bot" {
+		t.Fatalf("localpart = %q", e.state(t, "localpart"))
+	}
+	for k, v := range old {
+		if e.state(t, k) == v {
+			t.Errorf("state %s kept the old bot's %q", k, v)
+		}
+	}
+	if user, _, err := b.m.WhoAmI(ctx); err != nil || user != "@community-bot:example.org" {
+		t.Fatalf("whoami = %q, %v", user, err)
+	}
+	if _, ok, _ := e.st.BotState(ctx, keySyncToken); ok {
+		t.Error("the old bot's sync token was kept")
+	}
+	m1, _ := e.st.MatrixMember(ctx, "sub-1")
+	m2, _ := e.st.MatrixMember(ctx, "sub-2")
+	if m1.RoomID != "" || m2.RoomID != "" {
+		t.Errorf("rooms kept: %q %q", m1.RoomID, m2.RoomID)
+	}
+	if !m1.Enabled || m2.Enabled || m1.UserID != "@one:example.org" {
+		t.Errorf("members changed: %+v %+v", m1, m2)
+	}
+	if ok, err := e.st.ClaimDM(ctx, "sub-1", week); ok || err != nil {
+		t.Errorf("the week's send was forgotten: %v %v", ok, err)
+	}
+}
+
+// A first start, or a restart under the same localpart, keeps the rooms.
+func TestStartSameLocalpartKeepsRooms(t *testing.T) {
+	e := newEnv(t)
+	ctx := context.Background()
+	if err := e.st.SetMatrixRoom(ctx, "sub-1", "!dm1:example.org"); err != nil {
+		t.Fatal(err)
+	}
+	for range 2 {
+		if _, err := e.start(t); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if m, _ := e.st.MatrixMember(ctx, "sub-1"); m.RoomID != "!dm1:example.org" {
+		t.Fatalf("room = %q", m.RoomID)
+	}
+}
+
 func TestStartTakenLocalpart(t *testing.T) {
 	e := newEnv(t)
-	id := e.mas.AddUser("digest-bot", time.Now().Add(-time.Hour))
+	id := e.mas.AddUser("community-bot", time.Now().Add(-time.Hour))
 	e.mas.Link(provider, "sub-x", id)
 	_, err := e.start(t)
 	if !errors.Is(err, ErrOff) {
 		t.Fatalf("err = %v", err)
 	}
-	for _, w := range []string{"digest-bot", "ENGAGEMENT_MATRIX_BOT_LOCALPART", "bot_localpart"} {
+	for _, w := range []string{"community-bot", "ENGAGEMENT_MATRIX_BOT_LOCALPART", "bot_localpart"} {
 		if !strings.Contains(err.Error(), w) {
 			t.Errorf("message lacks %q: %v", w, err)
 		}
@@ -157,7 +276,7 @@ func TestStartTakenLocalpart(t *testing.T) {
 
 func TestStartTakenWithoutLinksNoIntent(t *testing.T) {
 	e := newEnv(t)
-	e.mas.AddUser("digest-bot", time.Now())
+	e.mas.AddUser("community-bot", time.Now())
 	if _, err := e.start(t); !errors.Is(err, ErrOff) {
 		t.Fatalf("err = %v", err)
 	}
@@ -166,10 +285,10 @@ func TestStartTakenWithoutLinksNoIntent(t *testing.T) {
 func TestStartRecoversLostCreate(t *testing.T) {
 	e := newEnv(t)
 	at := time.Now().UTC().Truncate(time.Second)
-	if err := e.st.SetBotState(context.Background(), "create_intent", "digest-bot "+at.Format(time.RFC3339)); err != nil {
+	if err := e.st.SetBotState(context.Background(), "create_intent", "community-bot "+at.Format(time.RFC3339)); err != nil {
 		t.Fatal(err)
 	}
-	id := e.mas.AddUser("digest-bot", at.Add(time.Second))
+	id := e.mas.AddUser("community-bot", at.Add(time.Second))
 	if _, err := e.start(t); err != nil {
 		t.Fatal(err)
 	}
@@ -185,7 +304,7 @@ func TestStartIntentForOtherLocalpartDoesNotAdopt(t *testing.T) {
 	e := newEnv(t)
 	at := time.Now().UTC().Truncate(time.Second)
 	_ = e.st.SetBotState(context.Background(), "create_intent", "other "+at.Format(time.RFC3339))
-	e.mas.AddUser("digest-bot", at.Add(time.Second))
+	e.mas.AddUser("community-bot", at.Add(time.Second))
 	if _, err := e.start(t); !errors.Is(err, ErrOff) {
 		t.Fatalf("err = %v", err)
 	}
@@ -194,8 +313,8 @@ func TestStartIntentForOtherLocalpartDoesNotAdopt(t *testing.T) {
 func TestStartUserOlderThanIntentNotAdopted(t *testing.T) {
 	e := newEnv(t)
 	at := time.Now().UTC().Truncate(time.Second)
-	_ = e.st.SetBotState(context.Background(), "create_intent", "digest-bot "+at.Format(time.RFC3339))
-	e.mas.AddUser("digest-bot", at.Add(-10*time.Minute))
+	_ = e.st.SetBotState(context.Background(), "create_intent", "community-bot "+at.Format(time.RFC3339))
+	e.mas.AddUser("community-bot", at.Add(-10*time.Minute))
 	if _, err := e.start(t); !errors.Is(err, ErrOff) {
 		t.Fatalf("err = %v", err)
 	}
@@ -299,7 +418,7 @@ func TestCallRenewsOnUnknownToken(t *testing.T) {
 // name, and leaves no intent behind that could adopt the other account later.
 func TestStartTakenRace(t *testing.T) {
 	e := newEnv(t)
-	e.mas.AddUser("digest-bot", time.Now())
+	e.mas.AddUser("community-bot", time.Now())
 	e.mas.FailUsernames.Store(404)
 	if _, err := e.start(t); !errors.Is(err, ErrOff) {
 		t.Fatalf("err = %v", err)
@@ -314,7 +433,7 @@ func TestStartTakenRace(t *testing.T) {
 func TestStartStoredAccountMissing(t *testing.T) {
 	e := newEnv(t)
 	ctx := context.Background()
-	for k, v := range map[string]string{"mas_user_id": "01MISSING", "localpart": "digest-bot",
+	for k, v := range map[string]string{"mas_user_id": "01MISSING", "localpart": "community-bot",
 		"session_id": "01OLDSESSION", "access_token": "old-token"} {
 		if err := e.st.SetBotState(ctx, k, v); err != nil {
 			t.Fatal(err)

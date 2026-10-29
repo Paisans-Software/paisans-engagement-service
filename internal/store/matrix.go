@@ -78,6 +78,13 @@ func (s *Store) ForgetMatrixRoom(ctx context.Context, subject, roomID string) er
 	return err
 }
 
+// ForgetMatrixRooms clears every member's room, for a new bot account that is
+// in none of them.
+func (s *Store) ForgetMatrixRooms(ctx context.Context) error {
+	_, err := s.pool.Exec(ctx, `UPDATE matrix_members SET room_id=NULL, at=now() WHERE room_id IS NOT NULL`)
+	return err
+}
+
 // SetMatrixEnabled turns the member's Matrix digest on or off. Turning it off
 // for a member who has also unsubscribed from email forgets which threads
 // they were shown.

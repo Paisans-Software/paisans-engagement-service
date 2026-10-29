@@ -42,7 +42,8 @@ func TestLoadValid(t *testing.T) {
 		ListenAddr: "127.0.0.1:9000", PublicURL: "https://digest.example.org",
 		DatabaseURL: "postgres://own", MbinDatabaseURL: "postgres://mbin", MbinURL: "https://forum.example.org",
 		InstanceTitle: "Example Forum", MetaTitle: "Example", SigningKey: make([]byte, 32),
-		SMTP: SMTP{Host: "mail.example.org", Port: 465, User: "u", Password: "p", From: "digest@example.org", FromName: "Example", TLS: "tls"},
+		SMTP:   SMTP{Host: "mail.example.org", Port: 465, User: "u", Password: "p", From: "digest@example.org", FromName: "Example", TLS: "tls"},
+		Matrix: Matrix{BotDisplayName: "Community Bot"},
 	}
 	if !reflect.DeepEqual(c, want) {
 		t.Fatalf("got %+v, want %+v", c, want)
@@ -162,7 +163,7 @@ func matrixEnv() map[string]string {
 		"ENGAGEMENT_MAS_CLIENT_ID":         ulidA,
 		"ENGAGEMENT_MAS_CLIENT_SECRET":     "s3cret",
 		"ENGAGEMENT_MAS_UPSTREAM_PROVIDER": ulidB,
-		"ENGAGEMENT_MATRIX_BOT_LOCALPART":  "digest-bot",
+		"ENGAGEMENT_MATRIX_BOT_LOCALPART":  "community-bot",
 	}
 }
 
@@ -183,10 +184,40 @@ func TestMatrixOnWithAllSeven(t *testing.T) {
 	}
 	want := Matrix{
 		URL: "https://matrix.example.org", ServerName: "example.org", MASAdminURL: "http://10.0.0.5:18010",
-		ClientID: ulidA, ClientSecret: "s3cret", UpstreamProvider: ulidB, BotLocalpart: "digest-bot",
+		ClientID: ulidA, ClientSecret: "s3cret", UpstreamProvider: ulidB, BotLocalpart: "community-bot",
+		BotDisplayName: "Community Bot",
 	}
 	if !c.Matrix.Enabled() || c.Matrix != want || len(c.Matrix.Missing()) != 0 {
 		t.Fatalf("got %+v", c.Matrix)
+	}
+}
+
+// The display name is optional: it is not one of the seven, and it is
+// trimmed.
+func TestMatrixBotDisplayName(t *testing.T) {
+	for in, want := range map[string]string{
+		"": "Community Bot", "Paisans Bot": "Paisans Bot", "  Paisans Bot\t": "Paisans Bot",
+		strings.Repeat("é", 256): strings.Repeat("é", 256),
+	} {
+		o := matrixEnv()
+		o["ENGAGEMENT_MATRIX_BOT_DISPLAY_NAME"] = in
+		c, err := Load(env(o))
+		if err != nil {
+			t.Fatalf("%q: %v", in, err)
+		}
+		if c.Matrix.BotDisplayName != want || !c.Matrix.Enabled() {
+			t.Errorf("%q: got %q", in, c.Matrix.BotDisplayName)
+		}
+	}
+	o := matrixEnv()
+	delete(o, "ENGAGEMENT_MATRIX_BOT_LOCALPART")
+	o["ENGAGEMENT_MATRIX_BOT_DISPLAY_NAME"] = "Paisans Bot"
+	c, err := Load(env(o))
+	if err != nil || c.Matrix.Enabled() || len(c.Matrix.Missing()) != 1 {
+		t.Fatalf("err %v, missing %v", err, c.Matrix.Missing())
+	}
+	if c, _ := Load(env(map[string]string{"ENGAGEMENT_MATRIX_BOT_DISPLAY_NAME": "Paisans Bot"})); len(c.Matrix.Missing()) != 7 {
+		t.Fatalf("missing %v", c.Matrix.Missing())
 	}
 }
 
@@ -213,6 +244,9 @@ func TestMatrixValidation(t *testing.T) {
 		{"ENGAGEMENT_MAS_UPSTREAM_PROVIDER", "nope"},
 		{"ENGAGEMENT_MAS_CLIENT_ID", "nope"},
 		{"ENGAGEMENT_MATRIX_SERVER_NAME", "example.org\nevil"},
+		{"ENGAGEMENT_MATRIX_BOT_DISPLAY_NAME", "   "},
+		{"ENGAGEMENT_MATRIX_BOT_DISPLAY_NAME", "Paisans\nBot"},
+		{"ENGAGEMENT_MATRIX_BOT_DISPLAY_NAME", strings.Repeat("é", 257)},
 	} {
 		o := matrixEnv()
 		o[tc.name] = tc.value

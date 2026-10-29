@@ -205,7 +205,7 @@ func TestSetDisplayNameIsNotPaced(t *testing.T) {
 	c, srv, _ := newClient(t, Pacing{MessagesPerSecond: 0.001, MessageBurst: 1, RoomsPerSecond: 0.001, RoomBurst: 1})
 	start := time.Now()
 	for i := 0; i < 3; i++ {
-		if err := c.SetDisplayName(context.Background(), "@digestbot:example.org", "Digest Bot"); err != nil {
+		if err := c.SetDisplayName(context.Background(), "@digestbot:example.org", "Community Bot"); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -213,7 +213,7 @@ func TestSetDisplayNameIsNotPaced(t *testing.T) {
 		t.Fatal("profile writes were paced")
 	}
 	name, err := c.DisplayName(context.Background(), "@digestbot:example.org")
-	if err != nil || name != "Digest Bot" || srv.Profile("@digestbot:example.org") != "Digest Bot" {
+	if err != nil || name != "Community Bot" || srv.Profile("@digestbot:example.org") != "Community Bot" {
 		t.Fatalf("name %q err %v", name, err)
 	}
 	if n, err := c.DisplayName(context.Background(), "@nobody:example.org"); err != nil || n != "" {

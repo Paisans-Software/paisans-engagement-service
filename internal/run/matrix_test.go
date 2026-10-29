@@ -100,7 +100,7 @@ func (f *fakeDM) subjects() []string {
 // onSendDay is an hour after the send time of the shared test week.
 func onSendDay() time.Time { return week.Add(time.Hour) }
 
-// matrixRunner is runner with the Digest Bot configured and dm running.
+// matrixRunner is runner with the Matrix bot configured and dm running.
 func matrixRunner(s *store.Store, src run.Source, snd mail.Sender, dm run.DM) *run.Runner {
 	r := runner(s, src, snd)
 	r.MatrixConfigured = true
