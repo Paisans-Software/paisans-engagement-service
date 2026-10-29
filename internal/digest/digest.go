@@ -77,6 +77,8 @@ type View struct {
 	Visited bool
 	// Shown is what earlier digests showed the member.
 	Shown map[Key]bool
+	// Following is the magazines the member follows and can open, by name.
+	Following []Magazine
 }
 
 type Stats struct{ NewThreads, Comments, NewMembers int }
@@ -95,6 +97,13 @@ type Digest struct {
 	// picked by AddUnanswered.
 	Unanswered        []Item
 	UnansweredHeading string
+	// Discover is a few busy threads from magazines the member does not
+	// follow and the rest of the digest does not show, picked by
+	// AddDiscover. Following is the first few magazines the member follows,
+	// for the section to name, and FollowingMore how many more they follow.
+	Discover      []Item
+	Following     []Magazine
+	FollowingMore int
 }
 
 // unansweredHeadings are the headings the unanswered section may have.
@@ -105,6 +114,10 @@ const (
 	maxFederated  = 2
 	maxUnanswered = 3
 	excerptRunes  = 200
+
+	maxDiscover       = 3
+	minDiscover       = 2
+	maxFollowingNamed = 3
 )
 
 type ranked struct {
@@ -139,19 +152,7 @@ func Build(items []Item, v View, stats Stats) (Digest, bool) {
 	if len(rs) == 0 {
 		return Digest{}, false
 	}
-	sort.SliceStable(rs, func(i, j int) bool {
-		a, b := rs[i], rs[j]
-		if a.score != b.score {
-			return a.score > b.score
-		}
-		if a.item.Comments != b.item.Comments {
-			return a.item.Comments > b.item.Comments
-		}
-		if a.item.Key.ID != b.item.Key.ID {
-			return a.item.Key.ID < b.item.Key.ID
-		}
-		return a.item.Key.Kind == KindEntry && b.item.Key.Kind != KindEntry
-	})
+	sortRanked(rs)
 
 	d := Digest{Stats: stats}
 	featured := -1
@@ -181,6 +182,73 @@ func Build(items []Item, v View, stats Stats) (Digest, bool) {
 	return d, true
 }
 
+// sortRanked orders rs best first, breaking ties by comments, then by id,
+// then entries before posts, so the order never depends on the input's.
+func sortRanked(rs []ranked) {
+	sort.SliceStable(rs, func(i, j int) bool {
+		a, b := rs[i], rs[j]
+		if a.score != b.score {
+			return a.score > b.score
+		}
+		if a.item.Comments != b.item.Comments {
+			return a.item.Comments > b.item.Comments
+		}
+		if a.item.Key.ID != b.item.Key.ID {
+			return a.item.Key.ID < b.item.Key.ID
+		}
+		return a.item.Key.Kind == KindEntry && b.item.Key.Kind != KindEntry
+	})
+}
+
+// AddDiscover picks up to three of items, the week's candidates, from
+// magazines the member does not follow, for them to see that the site is
+// busier than their own magazines. It takes the best ranked thread of each
+// magazine that neither the featured thread nor the list is in, and leaves out
+// what Build would for the member, anything federated and any thread an
+// earlier digest showed, even one with new comments. Fewer than two leaves
+// the section out.
+func (d *Digest) AddDiscover(items []Item, v View) {
+	// A magazine the rest of the digest is in is used, so none of its
+	// threads, those shown among them, can be picked.
+	used := map[int64]bool{}
+	if d.Featured != nil {
+		used[d.Featured.Item.Magazine.ID] = true
+	}
+	for _, it := range d.More {
+		used[it.Magazine.ID] = true
+	}
+	var rs []ranked
+	for _, it := range items {
+		if used[it.Magazine.ID] || it.Federated || v.Subscribed[it.Magazine.ID] ||
+			v.Joined[it.Key] || v.Shown[it.Key] || v.BlockedMagazines[it.Magazine.ID] ||
+			v.BannedMagazines[it.Magazine.ID] || v.BlockedUsers[it.AuthorID] {
+			continue
+		}
+		rs = append(rs, ranked{it, rank(it, v)})
+	}
+	sortRanked(rs)
+	var picked []Item
+	for _, r := range rs {
+		if len(picked) == maxDiscover {
+			break
+		}
+		if used[r.item.Magazine.ID] {
+			continue
+		}
+		used[r.item.Magazine.ID] = true
+		picked = append(picked, r.item)
+	}
+	if len(picked) < minDiscover {
+		return
+	}
+	d.Discover = picked
+	n := min(len(v.Following), maxFollowingNamed)
+	if n > 0 {
+		d.Following = slices.Clone(v.Following[:n])
+	}
+	d.FollowingMore = len(v.Following) - n
+}
+
 // AddUnanswered picks, at random from r, up to three of fresh, the week's new
 // threads that nobody has answered, for the member to answer first. It leaves
 // out what Build would for the member, anything federated, any thread an
@@ -192,7 +260,7 @@ func (d *Digest) AddUnanswered(fresh []Item, v View, r *rand.Rand) {
 	if d.Featured != nil {
 		taken[d.Featured.Item.Key] = true
 	}
-	for _, it := range d.More {
+	for _, it := range slices.Concat(d.More, d.Discover) {
 		taken[it.Key] = true
 	}
 	var pool []Item

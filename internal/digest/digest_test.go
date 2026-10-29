@@ -521,3 +521,141 @@ func TestHost(t *testing.T) {
 		}
 	}
 }
+
+// discover builds the member's digest from items and adds Discover to it.
+func discover(t *testing.T, items []Item, v View) Digest {
+	t.Helper()
+	d, ok := Build(items, v, Stats{})
+	if !ok {
+		t.Fatal("Build found nothing")
+	}
+	d.AddDiscover(items, v)
+	return d
+}
+
+func mainMagazines(d Digest) map[int64]bool {
+	out := map[int64]bool{}
+	if d.Featured != nil {
+		out[d.Featured.Item.Magazine.ID] = true
+	}
+	for _, it := range d.More {
+		out[it.Magazine.ID] = true
+	}
+	return out
+}
+
+// Discover is the busiest threads left, in rank order, from magazines the
+// member does not follow and the main list does not show.
+func TestDiscoverPicksBusiestElsewhere(t *testing.T) {
+	var items []Item
+	// Magazine 1 is followed; 2 to 7 fill the main list; 8 to 11 are left.
+	items = append(items, entry(1, 1, 50, 50, 50))
+	for i := int64(2); i <= 7; i++ {
+		items = append(items, entry(i, i, 100, 100, 100))
+	}
+	items = append(items, entry(8, 8, 3, 0, 0), entry(9, 9, 9, 0, 0), entry(10, 10, 6, 0, 0), entry(11, 11, 1, 0, 0))
+	v := View{Subscribed: map[int64]bool{1: true}}
+	d := discover(t, items, v)
+	if got := keys(d.Discover); !eq(got, []int64{9, 10, 8}) {
+		t.Fatalf("got %v", got)
+	}
+}
+
+func TestDiscoverOnePerMagazine(t *testing.T) {
+	items := []Item{entry(1, 1, 100, 100, 100), entry(2, 2, 9, 0, 0), entry(3, 2, 8, 0, 0), entry(4, 3, 1, 0, 0)}
+	// The main list is only the featured thread, so magazines 2 and 3 are
+	// open to Discover, and magazine 2's busier thread wins.
+	d := Digest{Featured: &Featured{Item: items[0]}}
+	d.AddDiscover(items, View{})
+	if got := keys(d.Discover); !eq(got, []int64{2, 4}) {
+		t.Fatalf("got %v", got)
+	}
+}
+
+func TestDiscoverSkipsMainListMagazines(t *testing.T) {
+	items := []Item{entry(1, 1, 1, 0, 0), entry(2, 2, 1, 0, 0), entry(3, 1, 500, 0, 0), entry(4, 2, 400, 0, 0),
+		entry(5, 3, 1, 0, 0), entry(6, 4, 1, 0, 0)}
+	d := Digest{Featured: &Featured{Item: items[0]}, More: []Item{items[1]}}
+	d.AddDiscover(items, View{})
+	if got := keys(d.Discover); !eq(got, []int64{5, 6}) {
+		t.Fatalf("got %v", got)
+	}
+}
+
+func TestDiscoverExcludes(t *testing.T) {
+	ok1, ok2 := entry(1, 1, 1, 0, 0), entry(2, 2, 1, 0, 0)
+	subscribed := entry(3, 3, 90, 0, 0)
+	federated := fed(4, 4, 90, 0, 0)
+	joined := entry(5, 5, 90, 0, 0)
+	blockedMag := entry(6, 6, 90, 0, 0)
+	bannedMag := entry(7, 7, 90, 0, 0)
+	blockedAuthor := entry(8, 8, 90, 0, 0)
+	shown := entry(9, 9, 90, 0, 0)
+	shown.NewComments = 5
+	v := View{
+		Subscribed:       map[int64]bool{3: true},
+		Joined:           map[Key]bool{joined.Key: true},
+		BlockedMagazines: map[int64]bool{6: true},
+		BannedMagazines:  map[int64]bool{7: true},
+		BlockedUsers:     map[int64]bool{blockedAuthor.AuthorID: true},
+		Shown:            map[Key]bool{shown.Key: true},
+	}
+	d := Digest{}
+	d.AddDiscover([]Item{ok1, ok2, subscribed, federated, joined, blockedMag, bannedMag, blockedAuthor, shown}, v)
+	if got := keys(d.Discover); !eq(got, []int64{1, 2}) {
+		t.Fatalf("got %v", got)
+	}
+}
+
+func TestDiscoverNeedsTwo(t *testing.T) {
+	v := View{Following: []Magazine{{ID: 9, Name: "nine"}}}
+	d := Digest{}
+	d.AddDiscover([]Item{entry(1, 1, 1, 0, 0)}, v)
+	if d.Discover != nil || d.Following != nil || d.FollowingMore != 0 {
+		t.Fatalf("one thread gave %v, %v, %d", keys(d.Discover), d.Following, d.FollowingMore)
+	}
+	d.AddDiscover([]Item{entry(1, 1, 1, 0, 0), entry(2, 2, 1, 0, 0)}, v)
+	if len(d.Discover) != 2 {
+		t.Fatalf("two threads gave %v", keys(d.Discover))
+	}
+}
+
+func TestDiscoverFollowing(t *testing.T) {
+	items := []Item{entry(1, 1, 1, 0, 0), entry(2, 2, 1, 0, 0)}
+	var following []Magazine
+	for i := int64(11); i <= 15; i++ {
+		following = append(following, Magazine{ID: i, Name: fmt.Sprintf("m%d", i)})
+	}
+	d := Digest{}
+	d.AddDiscover(items, View{Following: following})
+	if !slices.Equal(d.Following, following[:3]) || d.FollowingMore != 2 {
+		t.Fatalf("got %v and %d more", d.Following, d.FollowingMore)
+	}
+	d = Digest{}
+	d.AddDiscover(items, View{})
+	if len(d.Discover) != 2 || d.Following != nil || d.FollowingMore != 0 {
+		t.Fatalf("following nothing gave %v, %v, %d", keys(d.Discover), d.Following, d.FollowingMore)
+	}
+}
+
+func TestUnansweredSkipsDiscover(t *testing.T) {
+	a, b := fresh(1, 1), fresh(2, 2)
+	d := Digest{Discover: []Item{a}}
+	d.AddUnanswered([]Item{a, b}, View{}, seeded(1))
+	if got := keys(d.Unanswered); !eq(got, []int64{2}) {
+		t.Fatalf("got %v", got)
+	}
+}
+
+// An empty view, as a preview has, follows nothing and has nil maps.
+func TestDiscoverEmptyView(t *testing.T) {
+	items := []Item{entry(1, 1, 100, 100, 100), entry(2, 2, 5, 0, 0), entry(3, 3, 4, 0, 0)}
+	d := Digest{Featured: &Featured{Item: items[0]}}
+	d.AddDiscover(items, View{})
+	if got := keys(d.Discover); !eq(got, []int64{2, 3}) {
+		t.Fatalf("got %v", got)
+	}
+	if mainMagazines(d)[2] {
+		t.Fatal("main list and Discover share a magazine")
+	}
+}
