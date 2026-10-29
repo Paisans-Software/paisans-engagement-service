@@ -17,8 +17,9 @@ import (
 	"github.com/paisans-software/paisans-engagement-service/internal/web"
 )
 
-// get fetches a digest link from the service's own pages at now.
-func get(t *testing.T, s *store.Store, link string, now time.Time) *httptest.ResponseRecorder {
+// get fetches a digest link from the service's own pages at now, as the
+// sign-in gate passes it on for the member subject.
+func get(t *testing.T, s *store.Store, subject, link string, now time.Time) *httptest.ResponseRecorder {
 	t.Helper()
 	path, ok := strings.CutPrefix(link, "https://digest.example.org")
 	if !ok {
@@ -26,8 +27,10 @@ func get(t *testing.T, s *store.Store, link string, now time.Time) *httptest.Res
 	}
 	h := web.NewServer(web.Options{Store: s, Key: key, Names: mail.Names{Instance: "Talk", Meta: "Talk · Example Community"},
 		SiteURL: "https://talk.example.org/", Now: func() time.Time { return now }})
+	req := httptest.NewRequest(http.MethodGet, path, nil)
+	req.Header.Set("X-Auth-Request-User", subject)
 	rec := httptest.NewRecorder()
-	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, path, nil))
+	h.ServeHTTP(rec, req)
 	return rec
 }
 
@@ -63,10 +66,16 @@ func TestMatrixPreview(t *testing.T) {
 		}
 	}
 	l := link(t, d.Notice)
-	if page := get(t, s, l, onSendDay().Add(23*time.Hour)); page.Code != 200 || !strings.Contains(page.Body.String(), "grinders") {
+	if l != "https://digest.example.org/d/preview/2026-10-26" {
+		t.Fatalf("preview link %q", l)
+	}
+	if page := get(t, s, "sub-1", l, onSendDay().Add(23*time.Hour)); page.Code != 200 || !strings.Contains(page.Body.String(), "grinders") {
 		t.Fatalf("preview page = %d", page.Code)
 	}
-	if page := get(t, s, l, onSendDay().Add(24*time.Hour)); page.Code != 404 {
+	if page := get(t, s, "sub-2", l, onSendDay().Add(23*time.Hour)); page.Code != 404 {
+		t.Fatalf("another member's preview page = %d", page.Code)
+	}
+	if page := get(t, s, "sub-1", l, onSendDay().Add(24*time.Hour)); page.Code != 404 {
 		t.Fatalf("preview page after a day = %d", page.Code)
 	}
 
@@ -91,7 +100,7 @@ func TestMatrixPreview(t *testing.T) {
 	if st := dmStatuses(t, s, "2026-10-26"); st["sub-1"] != string(store.StatusSent) {
 		t.Fatalf("dm_sends: %v", st)
 	}
-	if page := get(t, s, link(t, after[0].Notice), onSendDay()); page.Code != 200 {
+	if page := get(t, s, after[0].Subject, link(t, after[0].Notice), onSendDay()); page.Code != 200 {
 		t.Fatalf("week page = %d", page.Code)
 	}
 }
@@ -178,7 +187,10 @@ func TestMatrixSendOne(t *testing.T) {
 	if err != nil || len(shown) != 1 {
 		t.Fatalf("shown %v, %v", shown, err)
 	}
-	if page := get(t, s, link(t, got[0].Notice), week.AddDate(0, 0, 3)); page.Code != 200 {
+	if l := link(t, got[0].Notice); l != "https://digest.example.org/d/2026-10-26" {
+		t.Fatalf("link %q", l)
+	}
+	if page := get(t, s, "sub-1", link(t, got[0].Notice), week.AddDate(0, 0, 3)); page.Code != 200 {
 		t.Fatalf("page = %d", page.Code)
 	}
 

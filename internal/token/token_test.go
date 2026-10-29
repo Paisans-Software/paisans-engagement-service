@@ -1,13 +1,9 @@
 package token
 
 import (
-	"crypto/hmac"
-	"crypto/sha256"
-	"encoding/base64"
 	"regexp"
 	"strings"
 	"testing"
-	"time"
 )
 
 var key = []byte("test-key-test-key-test-key-12345")
@@ -89,101 +85,6 @@ func TestLineBreakFails(t *testing.T) {
 	for _, tok := range []string{"YW\nI" + good[3:], "YW\rI" + good[3:], good[:len(good)-1] + "\n" + good[len(good)-1:]} {
 		if _, ok := Verify(key, tok); ok {
 			t.Errorf("Verify(%q) succeeded", tok)
-		}
-	}
-}
-
-var digestWeek = time.Date(2026, 10, 26, 8, 0, 0, 0, time.FixedZone("x", -5*3600))
-
-func TestDigestRoundTrip(t *testing.T) {
-	sub, date, ok := VerifyDigest(key, SignDigest(key, "sub-1", digestWeek))
-	if !ok || sub != "sub-1" || date != "2026-10-26" {
-		t.Fatal(sub, date, ok)
-	}
-}
-
-func TestDigestAndUnsubscribeDoNotCross(t *testing.T) {
-	if _, ok := Verify(key, SignDigest(key, "sub-1", digestWeek)); ok {
-		t.Fatal("digest token read as unsubscribe")
-	}
-	if _, _, ok := VerifyDigest(key, Sign(key, "sub-1")); ok {
-		t.Fatal("unsubscribe token read as digest")
-	}
-}
-
-func TestDigestAltered(t *testing.T) {
-	enc := base64.RawURLEncoding.EncodeToString
-	good := SignDigest(key, "sub-1", digestWeek)
-	payload, sig, _ := strings.Cut(good, ".")
-	other := func(sub string, wk time.Time) string {
-		p, _, _ := strings.Cut(SignDigest(key, sub, wk), ".")
-		return p
-	}
-	cases := map[string]string{
-		"other subject":   other("sub-2", digestWeek) + "." + sig,
-		"other date":      other("sub-1", digestWeek.AddDate(0, 0, 7)) + "." + sig,
-		"wrong key":       SignDigest([]byte("another-key-another-key-another!"), "sub-1", digestWeek),
-		"empty subject":   SignDigest(key, "", digestWeek),
-		"bad date":        enc([]byte("sub-1\x002026-13-40")) + "." + sig,
-		"missing NUL":     enc([]byte("sub-12026-10-26")) + "." + sig,
-		"empty":           "",
-		"no dot":          payload,
-		"CR in payload":   payload[:4] + "\r" + payload[4:] + "." + sig,
-		"LF in signature": payload + "." + sig[:4] + "\n" + sig[4:],
-		"trailing LF":     good + "\n",
-	}
-	for name, tok := range cases {
-		if sub, date, ok := VerifyDigest(key, tok); ok {
-			t.Errorf("%s: VerifyDigest = %q, %q, true", name, sub, date)
-		}
-	}
-	// A correctly signed token with a bad date or missing NUL still fails.
-	for name, raw := range map[string]string{"bad date": "sub-1\x002026-13-40", "missing NUL": "sub-12026-10-26"} {
-		m := hmac.New(sha256.New, key)
-		m.Write([]byte("digest\x00" + raw))
-		tok := enc([]byte(raw)) + "." + enc(m.Sum(nil))
-		if _, _, ok := VerifyDigest(key, tok); ok {
-			t.Errorf("signed %s verified", name)
-		}
-	}
-}
-
-func TestPreviewRoundTrip(t *testing.T) {
-	sub, date, ok := VerifyPreview(key, SignPreview(key, "sub-1", digestWeek))
-	if !ok || sub != "sub-1" || date != "2026-10-26" {
-		t.Fatal(sub, date, ok)
-	}
-}
-
-// A preview token is never read as the week's digest token, or the other way
-// round, so a preview link cannot open the member's real digest.
-func TestPreviewAndDigestDoNotCross(t *testing.T) {
-	if _, _, ok := VerifyDigest(key, SignPreview(key, "sub-1", digestWeek)); ok {
-		t.Fatal("preview token read as digest")
-	}
-	if _, _, ok := VerifyPreview(key, SignDigest(key, "sub-1", digestWeek)); ok {
-		t.Fatal("digest token read as preview")
-	}
-	if _, ok := Verify(key, SignPreview(key, "sub-1", digestWeek)); ok {
-		t.Fatal("preview token read as unsubscribe")
-	}
-	if _, _, ok := VerifyPreview(key, Sign(key, "sub-1")); ok {
-		t.Fatal("unsubscribe token read as preview")
-	}
-}
-
-func TestPreviewAltered(t *testing.T) {
-	good := SignPreview(key, "sub-1", digestWeek)
-	_, sig, _ := strings.Cut(good, ".")
-	p, _, _ := strings.Cut(SignPreview(key, "sub-2", digestWeek), ".")
-	for name, tok := range map[string]string{
-		"other subject": p + "." + sig,
-		"wrong key":     SignPreview([]byte("another-key-another-key-another!"), "sub-1", digestWeek),
-		"empty subject": SignPreview(key, "", digestWeek),
-		"trailing LF":   good + "\n",
-	} {
-		if _, _, ok := VerifyPreview(key, tok); ok {
-			t.Errorf("%s verified", name)
 		}
 	}
 }

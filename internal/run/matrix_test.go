@@ -20,7 +20,6 @@ import (
 	"github.com/paisans-software/paisans-engagement-service/internal/run"
 	"github.com/paisans-software/paisans-engagement-service/internal/store"
 	"github.com/paisans-software/paisans-engagement-service/internal/store/storetest"
-	"github.com/paisans-software/paisans-engagement-service/internal/token"
 )
 
 var _ run.DM = (*bot.Bot)(nil)
@@ -221,15 +220,11 @@ func TestDMAndEmailShowSameDigest(t *testing.T) {
 	if lines := strings.Split(notice.Body, "\n"); len(lines) < 3 || lines[2] != "• "+title {
 		t.Fatalf("notice: %q", notice.Body)
 	}
-	tok, ok := strings.CutPrefix(link(t, notice), "https://digest.example.org/d/")
-	if !ok {
-		t.Fatalf("link %q", link(t, notice))
+	// The link names only the week; the sign-in gate names the member.
+	if l := link(t, notice); l != "https://digest.example.org/d/2026-10-26" {
+		t.Fatalf("link %q", l)
 	}
-	sub, date, ok := token.VerifyDigest(key, tok)
-	if !ok || sub != "sub-1" || date != "2026-10-26" {
-		t.Fatalf("token names %q %q (ok %v)", sub, date, ok)
-	}
-	if _, found, err := s.WebDigest(context.Background(), sub, date, onSendDay()); err != nil || !found {
+	if _, found, err := s.WebDigest(context.Background(), "sub-1", "2026-10-26", onSendDay()); err != nil || !found {
 		t.Fatalf("web digest: %v %v", found, err)
 	}
 }
@@ -691,9 +686,8 @@ func TestWeekDateAgreesInLocalZone(t *testing.T) {
 			if len(got) != 1 {
 				t.Fatalf("deliveries: %v", dm.subjects())
 			}
-			tok, _ := strings.CutPrefix(link(t, got[0].Notice), "https://digest.example.org/d/")
-			if _, date, ok := token.VerifyDigest(key, tok); !ok || date != "2026-03-30" {
-				t.Fatalf("token date %q (ok %v)", date, ok)
+			if l := link(t, got[0].Notice); l != "https://digest.example.org/d/2026-03-30" {
+				t.Fatalf("link %q", l)
 			}
 		})
 	}

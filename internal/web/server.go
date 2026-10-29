@@ -1,9 +1,10 @@
-// Package web is the service's only public surface: the unsubscribe link in
-// the digest email, each sent digest's page and each preview's, and a health
-// check for the container.
+// Package web is the service's only HTTP surface: the unsubscribe link in
+// the digest email, each sent digest's page and each preview's for the
+// signed-in member, and a health check for the container.
 package web
 
 import (
+	"context"
 	"encoding/json"
 	"log/slog"
 	"net/http"
@@ -39,7 +40,7 @@ type server struct {
 	now     func() time.Time
 }
 
-// NewServer answers /healthz, the unsubscribe route and the digest page;
+// NewServer answers /healthz, the unsubscribe route and the digest pages;
 // every other path is a 404, because no other page exists.
 func NewServer(o Options) http.Handler {
 	s := &server{store: o.Store, key: o.Key, names: o.Names, siteURL: o.SiteURL, matrix: o.Matrix, now: o.Now}
@@ -59,9 +60,15 @@ func NewServer(o Options) http.Handler {
 	// Without these the mux answers another method on a known path with
 	// 405, which says the path exists.
 	mux.HandleFunc("/u/{token}", s.invalid)
-	mux.HandleFunc("GET /d/{token}", digestHeaders(s.page))
-	mux.HandleFunc("HEAD /d/{token}", digestHeaders(s.page))
-	mux.HandleFunc("/d/{token}", digestHeaders(s.invalid))
+	// The digest pages sit behind the community's sign-in gate, which names
+	// the member; the path names only the week, so every member's link for
+	// the week is the same.
+	mux.HandleFunc("GET /d/{week}", digestHeaders(s.page(s.store.WebDigest)))
+	mux.HandleFunc("HEAD /d/{week}", digestHeaders(s.page(s.store.WebDigest)))
+	mux.HandleFunc("/d/{week}", digestHeaders(s.invalid))
+	mux.HandleFunc("GET /d/preview/{week}", digestHeaders(s.page(s.store.PreviewDigest)))
+	mux.HandleFunc("HEAD /d/preview/{week}", digestHeaders(s.page(s.store.PreviewDigest)))
+	mux.HandleFunc("/d/preview/{week}", digestHeaders(s.invalid))
 	mux.HandleFunc("/healthz", http.NotFound)
 	return securityHeaders(mux)
 }
@@ -136,47 +143,59 @@ func (s *server) fail(w http.ResponseWriter, what string) {
 	w.Write([]byte("Something went wrong. Please try the link again."))
 }
 
-// page renders a sent digest, or a preview for a preview token. It reads and
-// records nothing else, so a link checker's GET or HEAD changes nothing. HEAD
-// gets the same status and headers without the body.
-func (s *server) page(w http.ResponseWriter, r *http.Request) {
-	read := s.store.WebDigest
-	subject, date, ok := token.VerifyDigest(s.key, r.PathValue("token"))
-	if !ok {
-		read = s.store.PreviewDigest
-		subject, date, ok = token.VerifyPreview(s.key, r.PathValue("token"))
-	}
-	if !ok {
-		s.invalid(w, r)
-		return
-	}
-	// The date goes to Postgres, so it is checked here as well as signed.
-	day, err := time.ParseInLocation("2006-01-02", date, time.Local)
-	if err != nil || day.Format("2006-01-02") != date {
-		s.invalid(w, r)
-		return
-	}
-	content, found, err := read(r.Context(), subject, date, s.now())
-	if err != nil {
-		s.fail(w, "reading a web digest failed")
-		return
-	}
-	if !found {
-		s.invalid(w, r)
-		return
-	}
-	var d digest.Digest
-	if err := json.Unmarshal(content, &d); err != nil {
-		s.fail(w, "a stored web digest is unreadable")
-		return
-	}
-	html, err := mail.RenderPage(d, s.names, s.siteURL, day.AddDate(0, 0, -7), day)
-	if err != nil {
-		s.fail(w, "rendering a web digest failed")
-		return
-	}
-	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	if r.Method != http.MethodHead {
-		w.Write([]byte(html))
+// memberHeader names the signed-in member. The gate (oauth2-proxy behind
+// Caddy's forward_auth) sets it to the member's Pocket ID subject on every
+// request it admits, and Caddy strips any copy a client sends, so it is
+// trusted when present.
+const memberHeader = "X-Auth-Request-User"
+
+// page renders the signed-in member's stored digest for the path's week,
+// read by read: the sent digest or the preview. It reads and records
+// nothing else, so a link checker's GET or HEAD changes nothing. HEAD gets
+// the same status and headers without the body.
+func (s *server) page(read func(ctx context.Context, subject, weekDate string, now time.Time) ([]byte, bool, error)) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		subject := r.Header.Get(memberHeader)
+		if subject == "" {
+			// No header means the request did not pass the gate, so the
+			// deployment is not gated. The answer is the same 404 as any bad
+			// link rather than a 401: it says nothing about whether a digest
+			// exists, and it does not hint that a header would open the page.
+			// A member never sees it, because the gate signs them in first.
+			slog.Warn("a web digest was requested without " + memberHeader + "; the engagement hostname is not behind the sign-in gate")
+			s.invalid(w, r)
+			return
+		}
+		// The date goes to Postgres, so it must be a calendar day spelled
+		// exactly as YYYY-MM-DD.
+		date := r.PathValue("week")
+		day, err := time.ParseInLocation("2006-01-02", date, time.Local)
+		if err != nil || day.Format("2006-01-02") != date {
+			s.invalid(w, r)
+			return
+		}
+		content, found, err := read(r.Context(), subject, date, s.now())
+		if err != nil {
+			s.fail(w, "reading a web digest failed")
+			return
+		}
+		if !found {
+			s.invalid(w, r)
+			return
+		}
+		var d digest.Digest
+		if err := json.Unmarshal(content, &d); err != nil {
+			s.fail(w, "a stored web digest is unreadable")
+			return
+		}
+		html, err := mail.RenderPage(d, s.names, s.siteURL, day.AddDate(0, 0, -7), day)
+		if err != nil {
+			s.fail(w, "rendering a web digest failed")
+			return
+		}
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		if r.Method != http.MethodHead {
+			w.Write([]byte(html))
+		}
 	}
 }

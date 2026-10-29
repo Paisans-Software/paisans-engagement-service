@@ -9,7 +9,7 @@ All notable changes to this project are documented here, in the
 
 - A Monday Matrix message from a bot account (Community Bot unless `ENGAGEMENT_MATRIX_BOT_DISPLAY_NAME` names it) with the week's first five threads and microblog posts and a link, for every member with a linked Matrix account.
 - Members stop the messages by replying stop, with or without quotes, or leaving the room, and start them again by replying start, resume or restore, or by inviting the bot.
-- Each sent digest can be read for four weeks at a signed /d/ link.
+- Each sent digest can be read for four weeks at /d/ and the week's date, by the signed-in member it was sent to, behind the community's sign-in gate.
 - A `--preview` option for `send --member` that mails the member the digest a brand-new member would get this week, without claiming them for the week.
 - A section in the digest offering each member up to three of the week's new threads and microblog posts that nobody has answered yet.
 - A `--matrix` option for `send --member` that sends the member's Matrix message for the week, or with `--preview` a preview message whose link opens for a day, instead of the email.
