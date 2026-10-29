@@ -536,7 +536,7 @@ func (r *Runner) matrixPass(ctx context.Context, members []digest.Member, week t
 		// Every member's link for the week is the same: the sign-in gate in
 		// front of the page names the member.
 		link := r.PublicURL + "/d/" + week.Format("2006-01-02")
-		out, err := dm.Deliver(dctx, t, bot.TxnID(m.Subject, week), bot.Weekly(dg, r.Names.Meta, link))
+		out, err := dm.Deliver(dctx, t, bot.TxnID(m.Subject, week), bot.Weekly(dg, r.Names.Meta, r.SiteURL, link))
 		// Released or finished even when the day or ctx has ended, or the
 		// member would stay claimed and unsent for the week.
 		wctx, wcancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
@@ -658,7 +658,7 @@ func (r *Runner) PreviewMatrix(ctx context.Context, week time.Time, username str
 		return fmt.Errorf("store the preview: %w", err)
 	}
 	link := r.PublicURL + "/d/preview/" + week.Format("2006-01-02")
-	out, err := dm.Deliver(ctx, t, bot.PreviewTxnID(), bot.WeeklyPreview(d, r.Names.Meta, link))
+	out, err := dm.Deliver(ctx, t, bot.PreviewTxnID(), bot.WeeklyPreview(d, r.Names.Meta, r.SiteURL, link))
 	switch {
 	case err != nil:
 		return fmt.Errorf("matrix preview: %w", err)

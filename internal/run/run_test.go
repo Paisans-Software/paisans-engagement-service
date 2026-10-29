@@ -111,7 +111,7 @@ func (f *fakeSource) Stats(context.Context, time.Time, time.Time) (digest.Stats,
 func runner(s *store.Store, src run.Source, snd mail.Sender) *run.Runner {
 	return &run.Runner{
 		Store: s, Source: src, Sender: snd,
-		Names:   mail.Names{Instance: "Talk", Meta: "Talk · Example Community"},
+		Names:   mail.Names{Meta: "Talk · Example Community"},
 		SiteURL: "https://talk.example.org/", PublicURL: "https://digest.example.org", Key: key,
 		Matrix: nil,
 	}

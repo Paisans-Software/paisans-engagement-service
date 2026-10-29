@@ -25,7 +25,7 @@ func get(t *testing.T, s *store.Store, subject, link string, now time.Time) *htt
 	if !ok {
 		t.Fatalf("link %q is not on the engagement hostname", link)
 	}
-	h := web.NewServer(web.Options{Store: s, Key: key, Names: mail.Names{Instance: "Talk", Meta: "Talk · Example Community"},
+	h := web.NewServer(web.Options{Store: s, Key: key, Names: mail.Names{Meta: "Talk · Example Community"},
 		SiteURL: "https://talk.example.org/", Now: func() time.Time { return now }})
 	req := httptest.NewRequest(http.MethodGet, path, nil)
 	req.Header.Set("X-Auth-Request-User", subject)

@@ -68,7 +68,6 @@ func TestSendRefusesWithoutMailHost(t *testing.T) {
 		"ENGAGEMENT_DATABASE_URL":      "postgres://unreachable.invalid/engagement",
 		"ENGAGEMENT_MBIN_DATABASE_URL": "postgres://unreachable.invalid/mbin",
 		"ENGAGEMENT_MBIN_URL":          "https://talk.example.org",
-		"ENGAGEMENT_INSTANCE_TITLE":    "Talk",
 		"ENGAGEMENT_META_TITLE":        "Talk",
 		"ENGAGEMENT_SIGNING_KEY":       "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
 	}
@@ -86,7 +85,6 @@ func TestSendMatrixRefusesWithoutMatrix(t *testing.T) {
 		"ENGAGEMENT_DATABASE_URL":       "postgres://unreachable.invalid/engagement",
 		"ENGAGEMENT_MBIN_DATABASE_URL":  "postgres://unreachable.invalid/mbin",
 		"ENGAGEMENT_MBIN_URL":           "https://talk.example.org",
-		"ENGAGEMENT_INSTANCE_TITLE":     "Talk",
 		"ENGAGEMENT_META_TITLE":         "Talk",
 		"ENGAGEMENT_SIGNING_KEY":        "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
 		"ENGAGEMENT_MATRIX_URL":         "https://matrix.example.org",

@@ -24,7 +24,13 @@ All notable changes to this project are documented here, in the
 - The digest email's HTML has a head with a title.
 - Every thread in the digest shows only its title and magazine, with no counts, featured label or microblog label. A microblog post is quoted instead of titled.
 - The digest email's subject and heading read "This week on" the community rather than "Your week on".
+- The Matrix message starts "This week on" the community, as the email does, with a blank line between its sections.
+- The email's button reads "View Everything".
 - Microblog posts and quoted comments in the digest drop their links and end with an ellipsis where one was. A post that is only a link is named by its site.
+
+### Removed
+
+- `ENGAGEMENT_INSTANCE_TITLE`: the button no longer names Mbin.
 
 ## [0.1.1] - 2026-10-27
 

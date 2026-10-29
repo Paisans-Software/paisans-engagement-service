@@ -161,7 +161,7 @@ func saveDigest(t *testing.T, st *store.Store, subject string) {
 
 func webServer(st *store.Store, now time.Time) http.Handler {
 	return NewServer(Options{
-		Store: st, Key: key, Names: mail.Names{Instance: "Talk", Meta: "Talk Community"},
+		Store: st, Key: key, Names: mail.Names{Meta: "Talk Community"},
 		SiteURL: "https://talk.example.org/", Now: func() time.Time { return now },
 	})
 }

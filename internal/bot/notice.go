@@ -46,16 +46,16 @@ const (
 // Discover's headings, for a member who follows magazines and one who
 // follows none.
 const (
-	discoverHeading      = "Busy where you don't follow:"
-	discoverNudgeHeading = "Busy around the site:"
+	discoverHeading      = "Active where you don't follow:"
+	discoverNudgeHeading = "Active around the site:"
 )
 
 // titled is one line of the notice. A microblog post has no title, so Post
 // has its text quoted instead, as the email does. Magazine is the magazine's
-// name, shown on a Discover line.
+// name, shown on a Discover line and linked to MagazineURL.
 type titled struct {
-	Title, URL, Magazine string
-	Post                 bool
+	Title, URL, Magazine, MagazineURL string
+	Post                              bool
 }
 
 // line is t as a plain text line.
@@ -73,27 +73,30 @@ func (t titled) line() string {
 // stopLine ends the notice.
 const stopLine = "Reply 'stop' to stop these messages."
 
-// weeklyHTML separates the last lines with <br>, not paragraphs, so the blank
+// weeklyHTML separates its sections with <br>, not paragraphs, so the blank
 // lines show even in a client that gives paragraphs and lists no margins.
 var weeklyHTML = template.Must(template.New("weekly").Parse(
-	`<p>{{.Mark}}Your weekly digest from {{.Meta}}</p>` +
-		`{{if .Items}}<ul>{{range .Items}}<li><a href="{{.URL}}">{{if .Post}}&ldquo;{{.Title}}&rdquo;{{else}}{{.Title}}{{end}}</a></li>{{end}}</ul>{{end}}` +
-		`{{if .Discover}}<p>{{.DiscoverHeading}}</p><ul>{{range .Discover}}<li><a href="{{.URL}}">{{if .Post}}&ldquo;{{.Title}}&rdquo;{{else}}{{.Title}}{{end}}</a> · !{{.Magazine}}</li>{{end}}</ul>{{end}}` +
-		`<br><a href="{{.Link}}">Read</a> the whole digest.<br><br>` + stopLine))
+	`{{.Mark}}This week on {{.Meta}}<br><br>` +
+		`{{if .Items}}<ul>{{range .Items}}<li><a href="{{.URL}}">{{if .Post}}&ldquo;{{.Title}}&rdquo;{{else}}{{.Title}}{{end}}</a></li>{{end}}</ul><br>{{end}}` +
+		`{{if .Discover}}{{.DiscoverHeading}}<ul>{{range .Discover}}<li><a href="{{.URL}}">{{if .Post}}&ldquo;{{.Title}}&rdquo;{{else}}{{.Title}}{{end}}</a> · <a href="{{.MagazineURL}}">!{{.Magazine}}</a></li>{{end}}</ul><br>{{end}}` +
+		`<a href="{{.Link}}">Read</a> the whole digest.<br><br>` + stopLine))
 
 // previewMark starts a preview notice.
 const previewMark = "[Preview] "
 
 // Weekly is the Monday notice: up to five threads and posts, up to two from
 // Discover, the link to the whole digest on the web, and how to stop.
-func Weekly(d digest.Digest, meta, link string) Notice { return weekly(d, meta, link, "") }
-
-// WeeklyPreview is the Monday notice marked as a preview.
-func WeeklyPreview(d digest.Digest, meta, link string) Notice {
-	return weekly(d, meta, link, previewMark)
+// siteURL is Mbin's, which a Discover line's magazine links into.
+func Weekly(d digest.Digest, meta, siteURL, link string) Notice {
+	return weekly(d, meta, siteURL, link, "")
 }
 
-func weekly(d digest.Digest, meta, link, mark string) Notice {
+// WeeklyPreview is the Monday notice marked as a preview.
+func WeeklyPreview(d digest.Digest, meta, siteURL, link string) Notice {
+	return weekly(d, meta, siteURL, link, previewMark)
+}
+
+func weekly(d digest.Digest, meta, siteURL, link, mark string) Notice {
 	var items []titled
 	add := func(it digest.Item) {
 		if len(items) < maxTitles {
@@ -107,16 +110,17 @@ func weekly(d digest.Digest, meta, link, mark string) Notice {
 		add(it)
 	}
 
+	siteURL = strings.TrimRight(siteURL, "/")
 	var discover []titled
 	for _, it := range d.Discover[:min(len(d.Discover), maxDiscoverLines)] {
-		discover = append(discover, titled{it.Title, it.URL, it.Magazine.Name, it.Key.Kind == digest.KindPost})
+		discover = append(discover, titled{it.Title, it.URL, it.Magazine.Name, siteURL + "/m/" + it.Magazine.Name, it.Key.Kind == digest.KindPost})
 	}
 	heading := discoverHeading
 	if len(d.Following) == 0 {
 		heading = discoverNudgeHeading
 	}
 
-	lines := []string{mark + "Your weekly digest from " + meta, ""}
+	lines := []string{mark + "This week on " + meta, ""}
 	if len(items) > 0 {
 		for _, it := range items {
 			lines = append(lines, it.line())

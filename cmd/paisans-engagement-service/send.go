@@ -109,7 +109,7 @@ func send(ctx context.Context, args []string, getenv func(string) string, now fu
 	defer src.Close()
 	runner := &run.Runner{
 		Store: st, Source: src, Sender: sender,
-		Names:   mail.Names{Instance: cfg.InstanceTitle, Meta: cfg.MetaTitle},
+		Names:   mail.Names{Meta: cfg.MetaTitle},
 		SiteURL: cfg.MbinURL, PublicURL: cfg.PublicURL, Key: cfg.SigningKey,
 		Only: opts.member,
 	}
