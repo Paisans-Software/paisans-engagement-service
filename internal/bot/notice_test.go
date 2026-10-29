@@ -33,7 +33,7 @@ func TestWeeklyBody(t *testing.T) {
 		`<li><a href="https://t/1">Grinders</a></li><li><a href="https://t/2">&ldquo;A post&rdquo;</a></li>` +
 		`<li><a href="https://t/3">Beans</a></li><li><a href="https://t/4">Kettles</a></li>` +
 		`<li><a href="https://t/5">Filters</a></li></ul>` +
-		`<br><a href="https://web/d/tok">Read the whole digest</a><br><br>Reply 'stop' to stop these messages.`
+		`<br><a href="https://web/d/tok">Read</a> the whole digest.<br><br>Reply 'stop' to stop these messages.`
 	if n.FormattedBody != wantHTML {
 		t.Fatalf("formatted = %q", n.FormattedBody)
 	}
@@ -61,7 +61,7 @@ func TestWeeklyEmpty(t *testing.T) {
 	n := Weekly(digest.Digest{}, "Talk · Example", "L")
 	want := "Your weekly digest from Talk · Example\n\nRead the whole digest: L\n\nReply 'stop' to stop these messages."
 	wantHTML := `<p>Your weekly digest from Talk · Example</p>` +
-		`<br><a href="L">Read the whole digest</a><br><br>Reply 'stop' to stop these messages.`
+		`<br><a href="L">Read</a> the whole digest.<br><br>Reply 'stop' to stop these messages.`
 	if n.Body != want || n.FormattedBody != wantHTML {
 		t.Fatalf("notice = %q / %q", n.Body, n.FormattedBody)
 	}

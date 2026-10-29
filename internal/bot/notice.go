@@ -53,7 +53,7 @@ const stopLine = "Reply 'stop' to stop these messages."
 var weeklyHTML = template.Must(template.New("weekly").Parse(
 	`<p>{{.Mark}}Your weekly digest from {{.Meta}}</p>` +
 		`{{if .Items}}<ul>{{range .Items}}<li><a href="{{.URL}}">{{if .Post}}&ldquo;{{.Title}}&rdquo;{{else}}{{.Title}}{{end}}</a></li>{{end}}</ul>{{end}}` +
-		`<br><a href="{{.Link}}">Read the whole digest</a><br><br>` + stopLine))
+		`<br><a href="{{.Link}}">Read</a> the whole digest.<br><br>` + stopLine))
 
 // previewMark starts a preview notice.
 const previewMark = "[Preview] "
