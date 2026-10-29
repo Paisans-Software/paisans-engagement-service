@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"os/signal"
 	"sync"
@@ -174,8 +175,14 @@ func serve() error {
 			DailyLimit: cfg.Welcome.DailyLimit, Operators: cfg.Welcome.Operators,
 		}
 		if mbinWelcomes {
-			wr.API = mbinapi.New(cfg.Welcome.MbinAPIURL, cfg.Welcome.AgentClientID, cfg.Welcome.AgentClientSecret,
-				&http.Client{Timeout: 30 * time.Second})
+			// The API is reached at Mbin's mesh address, and Mbin answers
+			// only for its own hostname.
+			mbinHost := ""
+			if u, err := url.Parse(cfg.MbinURL); err == nil {
+				mbinHost = u.Host
+			}
+			wr.API = mbinapi.New(cfg.Welcome.MbinAPIURL, mbinHost, cfg.Welcome.AgentClientID,
+				cfg.Welcome.AgentClientSecret, &http.Client{Timeout: 30 * time.Second})
 		}
 		if matrixOn {
 			h := bot.NewHolder()

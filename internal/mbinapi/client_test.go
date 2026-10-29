@@ -13,13 +13,14 @@ import (
 )
 
 type call struct {
-	Method, Path, Auth string
-	Body               map[string]any
+	Method, Path, Auth, Host string
+	Body                     map[string]any
 }
 
 type fake struct {
 	*httptest.Server
 	mu      sync.Mutex
+	hosts   []string
 	tokens  []url.Values
 	calls   []call
 	answer  func(c call) (int, any)
@@ -37,6 +38,7 @@ func (f *fake) handle(w http.ResponseWriter, r *http.Request) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	w.Header().Set("Content-Type", "application/json")
+	f.hosts = append(f.hosts, r.Host)
 	if r.URL.Path == "/token" {
 		r.ParseForm()
 		f.tokens = append(f.tokens, r.PostForm)
@@ -61,7 +63,7 @@ func (f *fake) handle(w http.ResponseWriter, r *http.Request) {
 
 func TestTokenRequestAndCache(t *testing.T) {
 	f := newFake(t, func(call) (int, any) { return 204, nil })
-	c := New(f.URL, "engagement-agent", "s3cret", nil)
+	c := New(f.URL, "forum.example.org", "engagement-agent", "s3cret", nil)
 	ctx := context.Background()
 	for range 2 {
 		if err := c.Subscribe(ctx, 7, 3); err != nil {
@@ -79,11 +81,16 @@ func TestTokenRequestAndCache(t *testing.T) {
 	if f.calls[0].Auth != "Bearer tok1" {
 		t.Fatalf("auth = %q", f.calls[0].Auth)
 	}
+	for _, h := range f.hosts {
+		if h != "forum.example.org" {
+			t.Fatalf("Host = %q, want Mbin's hostname on every request", h)
+		}
+	}
 }
 
 func TestUnauthorizedRenewsOnce(t *testing.T) {
 	f := newFake(t, func(call) (int, any) { return 204, nil })
-	c := New(f.URL, "id", "s", nil)
+	c := New(f.URL, "", "id", "s", nil)
 	ctx := context.Background()
 	if err := c.Subscribe(ctx, 1, 2); err != nil {
 		t.Fatal(err)
@@ -109,7 +116,7 @@ func TestRequests(t *testing.T) {
 		}
 		return 204, nil
 	})
-	c := New(f.URL, "id", "s", nil)
+	c := New(f.URL, "", "id", "s", nil)
 	ctx := context.Background()
 	m, ok, err := c.MagazineByName(ctx, "welcome")
 	if err != nil || !ok || m != (Magazine{ID: 3, Name: "welcome"}) {
@@ -157,17 +164,17 @@ func TestRequests(t *testing.T) {
 func TestErrors(t *testing.T) {
 	for status, want := range map[int]error{403: ErrForbidden, 401: ErrForbidden, 400: ErrRefused, 503: ErrUnavailable} {
 		f := newFake(t, func(call) (int, any) { return status, map[string]any{"detail": "no"} })
-		err := New(f.URL, "id", "s", nil).Subscribe(context.Background(), 1, 2)
+		err := New(f.URL, "", "id", "s", nil).Subscribe(context.Background(), 1, 2)
 		if !errors.Is(err, want) {
 			t.Errorf("status %d: err = %v, want %v", status, err, want)
 		}
 	}
 	f := newFake(t, func(call) (int, any) { return 404, nil })
-	if _, ok, err := New(f.URL, "id", "s", nil).MagazineByName(context.Background(), "welcome"); ok || err != nil {
+	if _, ok, err := New(f.URL, "", "id", "s", nil).MagazineByName(context.Background(), "welcome"); ok || err != nil {
 		t.Fatalf("missing magazine = %v, %v", ok, err)
 	}
 	f.Close()
-	if err := New(f.URL, "id", "s", nil).Subscribe(context.Background(), 1, 2); !errors.Is(err, ErrUnavailable) {
+	if err := New(f.URL, "", "id", "s", nil).Subscribe(context.Background(), 1, 2); !errors.Is(err, ErrUnavailable) {
 		t.Fatalf("down: %v", err)
 	}
 }

@@ -158,12 +158,12 @@ The service's own database holds who unsubscribed, which member was emailed whic
 | `ENGAGEMENT_MATRIX_BOT_LOCALPART` | the bot's localpart, from the `bot_localpart` setting, `community-bot` by default |
 | `ENGAGEMENT_MATRIX_BOT_DISPLAY_NAME` | the bot's display name, from the `bot_display_name` setting, optional; `Community Bot` when unset or empty, at most 256 characters, one line |
 
-| `ENGAGEMENT_MBIN_API_URL` | where the service reaches Mbin's API, over the mesh, no trailing slash |
+| `ENGAGEMENT_MBIN_API_URL` | where the service reaches Mbin's API, its mesh address, no trailing slash; every request carries the host of `ENGAGEMENT_MBIN_URL` as its `Host` |
 | `ENGAGEMENT_MBIN_AGENT_CLIENT_ID`, `ENGAGEMENT_MBIN_AGENT_CLIENT_SECRET` | the agent OAuth client the Mbin welcomes act through, declared to Mbin by the mbin app |
 | `ENGAGEMENT_COMMUNITY_ROOM_NAME` | the community room's name, from the `community_room_name` setting |
 | `ENGAGEMENT_COMMUNITY_ROOM_ALIAS` | the localpart of the community room's alias, lower case letters, digits and `-` |
 | `ENGAGEMENT_WELCOME_DAILY_LIMIT` | the most members the welcome email goes to in a day, default `50`, from the `welcome_email_daily_limit` setting |
-| `ENGAGEMENT_OPERATOR_EMAILS` | the operators' addresses, comma separated, for alerts |
+| `ENGAGEMENT_OPERATOR_EMAILS` | the operators' addresses, comma separated, in any order, for alerts |
 
 The bot runs only when all seven Matrix variables are set (the display name is not one of them); otherwise one log line says Matrix is off and the service sends the email alone. The Mbin welcomes run only when the three `ENGAGEMENT_MBIN_*` agent variables are set, the Matrix welcomes only when the bot runs and both room variables are set, and the welcome email only with a mail host; a part that is off says so in one log line.
 

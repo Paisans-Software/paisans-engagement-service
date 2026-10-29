@@ -49,26 +49,31 @@ type Entry struct {
 
 // Client talks to one Mbin.
 type Client struct {
-	base, id, secret string
-	hc               *http.Client
+	base, host, id, secret string
+	hc                     *http.Client
 
 	mu    sync.Mutex
 	token string
 	until time.Time
 }
 
-// New returns a client for the Mbin at baseURL. A nil hc gets a client with
-// a 30 second timeout.
-func New(baseURL, clientID, secret string, hc *http.Client) *Client {
+// New returns a client for the Mbin at baseURL. host, when not empty, is
+// sent as every request's Host: Mbin answers only for its own hostname, and
+// baseURL is its mesh address. A nil hc gets a client with a 30 second
+// timeout.
+func New(baseURL, host, clientID, secret string, hc *http.Client) *Client {
 	if hc == nil {
 		hc = &http.Client{Timeout: 30 * time.Second}
 	}
-	return &Client{base: strings.TrimRight(baseURL, "/"), id: clientID, secret: secret, hc: hc}
+	return &Client{base: strings.TrimRight(baseURL, "/"), host: host, id: clientID, secret: secret, hc: hc}
 }
 
 // send performs a request. Transport errors are reduced to fixed text,
 // because net/http's own names the URL.
 func (c *Client) send(ctx context.Context, req *http.Request, what string) (int, []byte, error) {
+	if c.host != "" {
+		req.Host = c.host
+	}
 	resp, err := c.hc.Do(req)
 	if err != nil {
 		if ctx.Err() != nil {
