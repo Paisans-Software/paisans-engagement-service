@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"math/rand/v2"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -49,6 +50,7 @@ func (f *fakeMbin) SubjectsByEmail(context.Context, []string) (map[string]string
 }
 
 type fakeAPI struct {
+	mu          sync.Mutex
 	magazine    *mbinapi.Magazine
 	threads     []string
 	created     int
@@ -73,7 +75,15 @@ func (f *fakeAPI) RestrictPosting(context.Context, int64) error {
 	f.restricted++
 	return f.restrictErr
 }
+func (f *fakeAPI) snapshot() []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]string(nil), f.threads...)
+}
+
 func (f *fakeAPI) CreateThread(_ context.Context, _ int64, title, _ string) (mbinapi.Entry, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	if f.postErr != nil {
 		return mbinapi.Entry{}, f.postErr
 	}
@@ -303,5 +313,34 @@ func TestMatrixBatchAlertsWhenRefused(t *testing.T) {
 	}
 	if len(fb.announced) != 1 || fb.roomCalls != 2 {
 		t.Fatalf("announced %d, room calls %d; want the room found again", len(fb.announced), fb.roomCalls)
+	}
+}
+
+func TestLoopRunsMbinOnlyWhileHeld(t *testing.T) {
+	for _, held := range []bool{false, true} {
+		r, fm, fa, _, _ := newRunner(t)
+		// The platform starts before the newcomer joined.
+		if _, err := r.Store.WelcomeStart(context.Background(), store.PlatformMbin, t0.Add(-time.Hour)); err != nil {
+			t.Fatal(err)
+		}
+		fm.newcomers = []mbin.Newcomer{newcomer(1, t0)}
+		ctx, cancel := context.WithCancel(context.Background())
+		done := make(chan struct{})
+		go func() {
+			defer close(done)
+			Loop(ctx, r, func() time.Time { return t0.Add(time.Minute) }, time.Hour, func() bool { return held })
+		}()
+		deadline := time.Now().Add(2 * time.Second)
+		for held && len(fa.snapshot()) == 0 && time.Now().Before(deadline) {
+			time.Sleep(10 * time.Millisecond)
+		}
+		if !held {
+			time.Sleep(200 * time.Millisecond)
+		}
+		cancel()
+		<-done
+		if got := len(fa.snapshot()); (got == 1) != held {
+			t.Fatalf("held=%v: threads %d", held, got)
+		}
 	}
 }

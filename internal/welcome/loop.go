@@ -53,33 +53,36 @@ func Loop(ctx context.Context, r *Runner, now func() time.Time, tick time.Durati
 	}
 }
 
-// HoldLock keeps trying to take the welcome lock, every retry, until ctx
-// ends, and holds it while it can. The function it returns reports whether
-// this copy holds it now.
-func HoldLock(ctx context.Context, st *store.Store, retry time.Duration) func() bool {
-	var held atomic.Bool
-	go func() {
-		for ctx.Err() == nil {
-			l, ok, err := st.TryWelcomeLock(ctx)
-			if err != nil && ctx.Err() == nil {
-				slog.Warn("the welcome lock could not be tried", "error", err)
-			}
-			if ok {
-				held.Store(true)
-				select {
-				case <-ctx.Done():
-				case <-l.Lost():
-					slog.Warn("the welcome lock was lost")
-				}
-				held.Store(false)
-				l.Release()
-			}
+// LockHolder holds the welcome lock for this copy while it can.
+type LockHolder struct{ held atomic.Bool }
+
+// Held reports whether this copy holds the welcome lock now.
+func (h *LockHolder) Held() bool { return h.held.Load() }
+
+// Hold tries to take the welcome lock every retry and holds it while it can,
+// until ctx ends; it releases the lock before it returns.
+func (h *LockHolder) Hold(ctx context.Context, st *store.Store, retry time.Duration) {
+	for ctx.Err() == nil {
+		l, ok, err := st.TryWelcomeLock(ctx)
+		if err != nil && ctx.Err() == nil {
+			slog.Warn("the welcome lock could not be tried", "error", err)
+		}
+		if ok {
+			h.held.Store(true)
 			select {
 			case <-ctx.Done():
-				return
-			case <-time.After(retry):
+			case <-l.Lost():
+				slog.Warn("the welcome lock was lost")
 			}
+			h.held.Store(false)
+			l.Release()
 		}
-	}()
-	return held.Load
+		t := time.NewTimer(retry)
+		select {
+		case <-ctx.Done():
+			t.Stop()
+			return
+		case <-t.C:
+		}
+	}
 }
