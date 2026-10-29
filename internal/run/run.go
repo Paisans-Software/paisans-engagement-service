@@ -359,6 +359,7 @@ func (r *Runner) digestFor(ctx context.Context, m digest.Member, from, week time
 		if !ok {
 			return d, false, nil
 		}
+		built.AddDiscover(items, v)
 		built.AddUnanswered(fresh, v, r.Rand)
 		content, err := json.Marshal(built)
 		if err != nil {
@@ -760,6 +761,7 @@ func (r *Runner) blankDigest(ctx context.Context, week time.Time) (digest.Digest
 	if !ok {
 		return d, errors.New("the week has nothing for even a new member, so there is no digest to preview")
 	}
+	d.AddDiscover(items, digest.View{})
 	d.AddUnanswered(fresh, digest.View{}, r.Rand)
 	return d, nil
 }
@@ -770,7 +772,7 @@ func sent(d digest.Digest) []store.Item {
 	if d.Featured != nil {
 		out = append(out, store.Item{Kind: string(d.Featured.Item.Key.Kind), ID: d.Featured.Item.Key.ID})
 	}
-	for _, it := range slices.Concat(d.More, d.Unanswered) {
+	for _, it := range slices.Concat(d.More, d.Discover, d.Unanswered) {
 		out = append(out, store.Item{Kind: string(it.Key.Kind), ID: it.Key.ID})
 	}
 	return out

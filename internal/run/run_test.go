@@ -37,7 +37,9 @@ type fakeSource struct {
 	joined  map[string]bool
 	hotErr  error
 	// fresh is the week's unanswered threads, and freshErr fails reading them.
-	fresh    []digest.Item
+	fresh []digest.Item
+	// extra is more of the week's threads, after thread.
+	extra    []digest.Item
 	freshErr error
 	hots     atomic.Int32
 	// viewErr fails View for the member with that subject.
@@ -78,7 +80,7 @@ func (f *fakeSource) Hot(_ context.Context, from, to time.Time) ([]digest.Item, 
 	if f.hotErr != nil {
 		return nil, f.hotErr
 	}
-	return []digest.Item{thread}, nil
+	return append([]digest.Item{thread}, f.extra...), nil
 }
 
 func (f *fakeSource) Unanswered(context.Context, time.Time, time.Time) ([]digest.Item, error) {
@@ -964,5 +966,53 @@ func TestPreviewOffersUnanswered(t *testing.T) {
 		strings.Contains(text, "Start the conversation")
 	if !heading || !strings.Contains(text, src.fresh[0].URL) {
 		t.Fatalf("no unanswered section in the preview:\n%s", text)
+	}
+}
+
+// elsewhere is five more threads in thread's magazine, which fill the list,
+// and two quieter ones in magazines nobody follows, left for Discover.
+func elsewhere() []digest.Item {
+	var out []digest.Item
+	for i := int64(11); i <= 15; i++ {
+		it := thread
+		it.Key.ID, it.URL = i, fmt.Sprintf("https://talk.example.org/m/coffee/t/%d", i)
+		out = append(out, it)
+	}
+	return append(out,
+		digest.Item{Key: digest.Key{Kind: digest.KindEntry, ID: 21}, Title: "bikes", URL: "https://talk.example.org/m/cycling/t/21",
+			Magazine: digest.Magazine{ID: 2, Name: "cycling", Title: "Cycling"}, AuthorID: 98, Comments: 1},
+		digest.Item{Key: digest.Key{Kind: digest.KindEntry, ID: 22}, Title: "novels", URL: "https://talk.example.org/m/books/t/22",
+			Magazine: digest.Magazine{ID: 3, Name: "books", Title: "Books"}, AuthorID: 98, Comments: 1},
+	)
+}
+
+// Discover is stored with the member's digest, which the web page and the
+// Matrix message show, and its threads count as shown.
+func TestWeekOffersDiscover(t *testing.T) {
+	s := storetest.New(t)
+	src := newSource()
+	src.extra = elsewhere()
+	rec := &mailtest.Recorder{}
+	if err := runner(s, src, rec).Week(context.Background(), week); err != nil {
+		t.Fatal(err)
+	}
+	raw, ok, err := s.SavedDigest(context.Background(), "sub-1", week)
+	if err != nil || !ok {
+		t.Fatalf("stored digest: %v, %v", ok, err)
+	}
+	var d digest.Digest
+	if err := json.Unmarshal(raw, &d); err != nil {
+		t.Fatal(err)
+	}
+	if len(d.Discover) != 2 || d.Discover[0].Key.ID != 21 || d.Discover[1].Key.ID != 22 {
+		t.Fatalf("stored discover %v", d.Discover)
+	}
+	var n int
+	if err := storetest.Conn(t, s).QueryRow(context.Background(),
+		`SELECT count(*) FROM shown WHERE kind = 'entry' AND item_id IN (21, 22)`).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	if n != 6 {
+		t.Fatalf("shown %d times, want 2 threads to 3 members", n)
 	}
 }
