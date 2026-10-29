@@ -27,7 +27,12 @@ func roomPath(roomID string, rest ...string) string {
 //
 // The preset is private_chat: trusted_private_chat raises every invitee to the
 // creator's power level, which would let the member turn encryption on. The
-// power levels keep everything but sending messages with the bot.
+// power levels keep everything but sending messages with the bot. They do not
+// name the bot: a version 12 room, Synapse's default, refuses a creator in
+// users, since a creator outranks every power level, and in an older version
+// Synapse's default users already gives the creator 100, which the override
+// leaves in place by not naming users (`synapse/handlers/room.py` at tag
+// `v1.164.1`).
 func (c *Client) CreateDirectRoom(ctx context.Context, bot, member string) (string, error) {
 	body := map[string]any{
 		"preset":           "private_chat",
@@ -39,7 +44,6 @@ func (c *Client) CreateDirectRoom(ctx context.Context, bot, member string) (stri
 			"content": map[string]any{"history_visibility": "invited"},
 		}},
 		"power_level_content_override": map[string]any{
-			"users":         map[string]int{bot: 100},
 			"users_default": 0, "events_default": 0, "state_default": 100,
 			"invite": 100, "kick": 100, "ban": 100, "redact": 100,
 			"events": map[string]int{
