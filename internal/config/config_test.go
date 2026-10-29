@@ -41,7 +41,7 @@ func TestLoadValid(t *testing.T) {
 		ListenAddr: "127.0.0.1:9000", PublicURL: "https://digest.example.org",
 		DatabaseURL: "postgres://own", MbinDatabaseURL: "postgres://mbin", MbinURL: "https://forum.example.org",
 		MetaTitle: "Example", SigningKey: make([]byte, 32),
-		SMTP:   SMTP{Host: "mail.example.org", Port: 465, User: "u", Password: "p", From: "digest@example.org", FromName: "Example", TLS: "tls"},
+		SMTP:    SMTP{Host: "mail.example.org", Port: 465, User: "u", Password: "p", From: "digest@example.org", FromName: "Example", TLS: "tls"},
 		Matrix:  Matrix{BotDisplayName: "Community Bot"},
 		Welcome: Welcome{DailyLimit: 50},
 	}
