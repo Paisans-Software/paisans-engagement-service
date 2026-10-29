@@ -29,7 +29,7 @@
 {{end}}{{if .Discover}}<div style="background:#f3faf6;border-radius:6px;padding:12px;margin:14px 0 0;">
 <div style="font-size:13px;font-weight:600;">{{.DiscoverHeading}}</div>
 <div style="color:#888888;font-size:12px;">{{.DiscoverLine}}</div>
-{{range .Discover}}<div style="padding:9px 0;border-bottom:1px solid #eeeeee;">
+{{range $i, $_ := .Discover}}<div style="padding:9px 0;{{if $i}}border-top:1px solid #eeeeee;{{end}}">
 {{if .Post}}<div>&ldquo;{{.Title}}&rdquo;</div>
 <div style="font-size:12px;"><a href="{{.URL}}" style="color:#22aa66;text-decoration:none;font-weight:600;">{{.Magazine}}</a></div>{{else}}<a href="{{.URL}}" style="color:#1144cc;text-decoration:none;font-weight:600;">{{.Title}}</a>
 <div style="color:#888888;font-size:12px;"><span style="color:#22aa66;font-weight:600;">{{.Magazine}}</span></div>{{end}}

@@ -17,6 +17,16 @@ FROM "user" u
 WHERE ` + memberRule + `
 ORDER BY u.id`
 
+// openMagazine is a magazine m whose threads the digest may show and name:
+// visible, not deleted here or on its home server, not marked for deletion
+// and not adult.
+const openMagazine = `m.visibility = 'visible' AND m.ap_deleted_at IS NULL
+	AND m.marked_for_deletion_at IS NULL AND NOT m.is_adult`
+
+// activeBan is a magazine_ban row still in force: a ban with an expiry in the
+// past no longer applies.
+const activeBan = `(expired_at IS NULL OR expired_at > now())`
+
 // isMemberSQL is whether a Pocket ID subject belongs to a member. $1 is the subject.
 const isMemberSQL = `
 SELECT EXISTS (SELECT 1 FROM "user" u WHERE u.oauth_oidc_id = $1 AND ` + memberRule + `)`
@@ -54,8 +64,7 @@ candidates AS (
 	SELECT i.*, m.name AS magazine_name, m.title AS magazine_title
 	FROM items i
 	JOIN magazine m ON m.id = i.magazine_id
-		AND m.visibility = 'visible' AND m.ap_deleted_at IS NULL
-		AND m.marked_for_deletion_at IS NULL AND NOT m.is_adult
+		AND ` + openMagazine + `
 	JOIN "user" a ON a.id = i.user_id AND NOT a.is_banned AND NOT a.is_deleted
 	WHERE NOT i.federated OR i.magazine_id IN (SELECT magazine_id FROM followed)
 	ORDER BY i.score + i.comment_count DESC, i.id, i.kind
@@ -142,39 +151,36 @@ WITH items AS (
 SELECT i.kind, i.id, i.user_id, i.slug, i.text, m.id, m.name, m.title
 FROM items i
 JOIN magazine m ON m.id = i.magazine_id
-	AND m.visibility = 'visible' AND m.ap_deleted_at IS NULL
-	AND m.marked_for_deletion_at IS NULL AND NOT m.is_adult
+	AND ` + openMagazine + `
 JOIN "user" a ON a.id = i.user_id AND NOT a.is_banned AND NOT a.is_deleted
 ORDER BY i.created_at DESC, i.id, i.kind
 LIMIT 200`
 
 // choicesSQL is what the member has chosen about magazines and people: each
 // row is a set name, an id and, for the magazines they follow and can open,
-// the magazine's name and title. $1 is the member's id, $2 the window's start.
+// the magazine's name and title, which are empty on every other row. $1 is the member's id, $2 the window's start.
 const choicesSQL = `
-SELECT 'subscribed', magazine_id, NULL::text, NULL::text FROM magazine_subscription WHERE user_id = $1
+SELECT 'subscribed', magazine_id, '', '' FROM magazine_subscription WHERE user_id = $1
 UNION ALL
 -- The followed magazines the digest may name: those hotSQL would take from
 -- and the member is not banned from.
-SELECT 'following', m.id, m.name, m.title
+SELECT 'following', m.id, COALESCE(m.name, ''), COALESCE(m.title, '')
 FROM magazine_subscription s
 JOIN magazine m ON m.id = s.magazine_id
-	AND m.visibility = 'visible' AND m.ap_deleted_at IS NULL
-	AND m.marked_for_deletion_at IS NULL AND NOT m.is_adult
+	AND ` + openMagazine + `
 WHERE s.user_id = $1 AND NOT EXISTS (
 	SELECT 1 FROM magazine_ban b WHERE b.user_id = $1 AND b.magazine_id = m.id
-		AND (b.expired_at IS NULL OR b.expired_at > now()))
+		AND ` + activeBan + `)
 UNION ALL
-SELECT 'blocked_magazine', magazine_id, NULL, NULL FROM magazine_block WHERE user_id = $1
+SELECT 'blocked_magazine', magazine_id, '', '' FROM magazine_block WHERE user_id = $1
 UNION ALL
--- A ban with an expiry in the past no longer applies.
-SELECT 'banned', magazine_id, NULL, NULL FROM magazine_ban
-WHERE user_id = $1 AND (expired_at IS NULL OR expired_at > now())
+SELECT 'banned', magazine_id, '', '' FROM magazine_ban
+WHERE user_id = $1 AND ` + activeBan + `
 UNION ALL
-SELECT 'blocked_user', blocked_id, NULL, NULL FROM user_block WHERE blocker_id = $1
+SELECT 'blocked_user', blocked_id, '', '' FROM user_block WHERE blocker_id = $1
 UNION ALL
 -- Mbin's only visit signal, updated at most daily.
-SELECT 'visited', id, NULL, NULL FROM "user" WHERE id = $1 AND last_active >= $2`
+SELECT 'visited', id, '', '' FROM "user" WHERE id = $1 AND last_active >= $2`
 
 // joinedSQL is which of the given items the member has already taken part
 // in. $1 is the member's id, $2 the entry ids and $3 the post ids asked about.

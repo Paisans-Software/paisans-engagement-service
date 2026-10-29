@@ -357,3 +357,13 @@ func TestRenderDiscoverEscapes(t *testing.T) {
 		t.Fatalf("html:\n%s", m.HTML)
 	}
 }
+
+// Discover's rows are divided from each other, not from the box's edge.
+func TestRenderDiscoverDividers(t *testing.T) {
+	h := render(t, withDiscover(nil, 0)).HTML
+	start := strings.Index(h, "background:#f3faf6")
+	box := h[start : start+strings.Index(h[start:], "See everything on")]
+	if n := strings.Count(box, "px solid"); n != 1 {
+		t.Fatalf("%d dividers for 2 rows:\n%s", n, box)
+	}
+}

@@ -227,14 +227,14 @@ func (s *Source) View(ctx context.Context, m digest.Member, from, to time.Time, 
 	var (
 		set         string
 		id          int64
-		name, title *string
+		name, title string
 	)
 	_, err = pgx.ForEachRow(rows, []any{&set, &id, &name, &title}, func() error {
 		switch set {
 		case "visited":
 			v.Visited = true
 		case "following":
-			v.Following = append(v.Following, digest.Magazine{ID: id, Name: *name, Title: oneLine(*title)})
+			v.Following = append(v.Following, digest.Magazine{ID: id, Name: name, Title: oneLine(title)})
 		default:
 			sets[set][id] = true
 		}
