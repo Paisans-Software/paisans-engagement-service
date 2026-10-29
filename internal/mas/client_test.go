@@ -298,7 +298,7 @@ func TestTokenWithoutLifetimeCached(t *testing.T) {
 	}
 }
 
-func TestNewestUsers(t *testing.T) {
+func TestUsersAfter(t *testing.T) {
 	c, s := newClient(t)
 	t0 := time.Date(2026, 10, 29, 9, 0, 0, 0, time.UTC)
 	a := s.AddUser("alice", t0)
@@ -306,16 +306,34 @@ func TestNewestUsers(t *testing.T) {
 	s.Deactivate(gone)
 	b := s.AddUser("bob", t0.Add(2*time.Minute))
 	c2 := s.AddUser("carol", t0.Add(3*time.Minute))
-	got, err := c.NewestUsers(context.Background(), 2)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(got) != 2 || got[0].ID != b || got[1].ID != c2 || got[1].Username != "carol" {
-		t.Fatalf("newest = %+v, want bob and carol", got)
+	got, err := c.UsersAfter(context.Background(), a, 1)
+	if err != nil || len(got) != 1 || got[0].ID != b {
+		t.Fatalf("first page = %+v, %v; want bob", got, err)
 	}
 	q, _ := url.ParseQuery(s.LastQuery())
-	if q.Get("page[last]") != "2" || q.Get("filter[status]") != "active" {
+	if q.Get("page[after]") != a || q.Get("page[first]") != "1" || q.Get("filter[status]") != "active" {
 		t.Fatalf("query = %v", q)
 	}
-	_ = a
+	got, err = c.UsersAfter(context.Background(), got[0].ID, 10)
+	if err != nil || len(got) != 1 || got[0].ID != c2 || got[0].Username != "carol" {
+		t.Fatalf("second page = %+v, %v; want carol", got, err)
+	}
+}
+
+func TestULIDAtOrdersBeforeLaterUsers(t *testing.T) {
+	t0 := time.Date(2026, 10, 29, 9, 0, 0, 0, time.UTC)
+	at := mas.ULIDAt(t0)
+	if len(at) != 26 || at != strings.ToUpper(at) {
+		t.Fatalf("ULIDAt = %q", at)
+	}
+	// 01JBEB… is a ULID made a millisecond later, any randomness.
+	if later := mas.ULIDAt(t0.Add(time.Millisecond)); !(at < later) {
+		t.Fatalf("%q is not before %q", at, later)
+	}
+	if got := mas.ULIDAt(time.UnixMilli(0)); got != "00000000000000000000000000" {
+		t.Fatalf("epoch = %q", got)
+	}
+	if got := mas.ULIDAt(time.UnixMilli(1)); got != "00000000010000000000000000" {
+		t.Fatalf("one ms = %q", got)
+	}
 }

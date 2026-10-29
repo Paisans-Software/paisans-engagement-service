@@ -91,16 +91,18 @@ func New(t *testing.T) *Server {
 // TokenURL is the fake's token endpoint, on its public listener.
 func (s *Server) TokenURL() string { return s.web.URL + "/oauth2/token" }
 
-func (s *Server) nextID() string {
+// nextID is a ULID whose time part is created, so ids order by creation as
+// MAS's do, and whose random part counts up.
+func (s *Server) nextID(created time.Time) string {
 	s.seq++
-	return fmt.Sprintf("01HX%022d", s.seq)
+	return mas.ULIDAt(created)[:10] + fmt.Sprintf("%016d", s.seq)
 }
 
 // AddUser registers a user and returns its ULID.
 func (s *Server) AddUser(username string, created time.Time) string {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	id := s.nextID()
+	id := s.nextID(created)
 	s.users = append(s.users, mas.User{ID: id, Username: username, CreatedAt: created})
 	return id
 }
@@ -331,7 +333,8 @@ func (s *Server) knownProvider(p string) bool {
 }
 
 // listUsers answers the user list in id order, with filter[status]=active
-// leaving out locked and deactivated users and page[last] keeping the last n.
+// leaving out locked and deactivated users, page[after] starting after an id
+// and page[first] keeping the first n.
 func (s *Server) listUsers(w http.ResponseWriter, q url.Values) {
 	var us []mas.User
 	for _, u := range s.users {
@@ -341,8 +344,12 @@ func (s *Server) listUsers(w http.ResponseWriter, q url.Values) {
 		us = append(us, u)
 	}
 	sort.Slice(us, func(i, j int) bool { return us[i].ID < us[j].ID })
-	if n, err := strconv.Atoi(q.Get("page[last]")); err == nil && n < len(us) {
-		us = us[len(us)-n:]
+	if after := q.Get("page[after]"); after != "" {
+		i := sort.Search(len(us), func(i int) bool { return us[i].ID > after })
+		us = us[i:]
+	}
+	if n, err := strconv.Atoi(q.Get("page[first]")); err == nil && n < len(us) {
+		us = us[:n]
 	}
 	data := []map[string]any{}
 	for _, u := range us {
@@ -401,7 +408,8 @@ func (s *Server) createUser(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	u := mas.User{ID: s.nextID(), Username: body.Username, CreatedAt: time.Now()}
+	now := time.Now()
+	u := mas.User{ID: s.nextID(now), Username: body.Username, CreatedAt: now}
 	s.users = append(s.users, u)
 	writeJSON(w, 201, map[string]any{"data": userResource(u)})
 }
@@ -415,7 +423,7 @@ func (s *Server) createSession(w http.ResponseWriter, r *http.Request) {
 	str := func(k string) string { v, _ := raw[k].(string); return v }
 	_, hasExp := raw["expires_in"]
 	rec := SessionRec{
-		ID: s.nextID(), UserID: str("actor_user_id"), Scope: str("scope"),
+		ID: s.nextID(time.Now()), UserID: str("actor_user_id"), Scope: str("scope"),
 		HumanName: str("human_name"), HasExpiresIn: hasExp,
 	}
 	rec.Token = fmt.Sprintf("mct_%s_%d", rec.ID[len(rec.ID)-4:], len(s.sessions))

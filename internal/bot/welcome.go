@@ -4,6 +4,7 @@ import (
 	"context"
 	"time"
 
+	"github.com/paisans-software/paisans-engagement-service/internal/mas"
 	"github.com/paisans-software/paisans-engagement-service/internal/matrix"
 )
 
@@ -13,30 +14,46 @@ type Newcomer struct {
 	CreatedAt                   time.Time
 }
 
-// newestUsers is how many of MAS's newest users NewMembers reads. Five
-// minutes of signups never come near it.
-const newestUsers = 200
+// usersPage is how many users NewMembers asks MAS for at a time, and
+// maxPages how many pages one call reads at most, so a long run of
+// accounts already welcomed or not linked never makes one batch unbounded.
+const (
+	usersPage = 100
+	maxPages  = 50
+)
 
-// NewMembers is every member whose Matrix account was created at or after
-// since: active, linked to a Pocket ID subject at the configured provider,
-// and not the bot.
-func (b *Bot) NewMembers(ctx context.Context, since time.Time) ([]Newcomer, error) {
-	users, err := b.a.NewestUsers(ctx, newestUsers)
-	if err != nil {
-		return nil, wrap(err)
-	}
+// NewMembers is up to limit members whose Matrix account was created at or
+// after since and is not in skip, oldest first: active, linked to a Pocket
+// ID subject at the configured provider, and not the bot. It pages through
+// MAS in creation order from since, so members past the limit are the next
+// call's rather than dropped.
+func (b *Bot) NewMembers(ctx context.Context, since time.Time, skip func(masUserID string) bool, limit int) ([]Newcomer, error) {
 	var out []Newcomer
-	for _, u := range users {
-		if u.CreatedAt.Before(since) || u.Username == b.cfg.Localpart || u.Locked || u.Deactivated {
-			continue
-		}
-		if _, linked, err := b.a.LinkedSubject(ctx, b.cfg.Provider, u.ID); err != nil {
+	after := mas.ULIDAt(since)
+	for range maxPages {
+		users, err := b.a.UsersAfter(ctx, after, usersPage)
+		if err != nil {
 			return nil, wrap(err)
-		} else if !linked {
-			continue
 		}
-		out = append(out, Newcomer{MASUserID: u.ID, UserID: "@" + u.Username + ":" + b.cfg.ServerName,
-			Username: u.Username, CreatedAt: u.CreatedAt})
+		for _, u := range users {
+			after = u.ID
+			if skip(u.ID) || u.CreatedAt.Before(since) || u.Username == b.cfg.Localpart || u.Locked || u.Deactivated {
+				continue
+			}
+			if _, linked, err := b.a.LinkedSubject(ctx, b.cfg.Provider, u.ID); err != nil {
+				return nil, wrap(err)
+			} else if !linked {
+				continue
+			}
+			out = append(out, Newcomer{MASUserID: u.ID, UserID: "@" + u.Username + ":" + b.cfg.ServerName,
+				Username: u.Username, CreatedAt: u.CreatedAt})
+			if len(out) == limit {
+				return out, nil
+			}
+		}
+		if len(users) < usersPage {
+			break
+		}
 	}
 	return out, nil
 }
