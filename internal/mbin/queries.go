@@ -149,20 +149,32 @@ ORDER BY i.created_at DESC, i.id, i.kind
 LIMIT 200`
 
 // choicesSQL is what the member has chosen about magazines and people: each
-// row is a set name and an id. $1 is the member's id, $2 the window's start.
+// row is a set name, an id and, for the magazines they follow and can open,
+// the magazine's name and title. $1 is the member's id, $2 the window's start.
 const choicesSQL = `
-SELECT 'subscribed', magazine_id FROM magazine_subscription WHERE user_id = $1
+SELECT 'subscribed', magazine_id, NULL::text, NULL::text FROM magazine_subscription WHERE user_id = $1
 UNION ALL
-SELECT 'blocked_magazine', magazine_id FROM magazine_block WHERE user_id = $1
+-- The followed magazines the digest may name: those hotSQL would take from
+-- and the member is not banned from.
+SELECT 'following', m.id, m.name, m.title
+FROM magazine_subscription s
+JOIN magazine m ON m.id = s.magazine_id
+	AND m.visibility = 'visible' AND m.ap_deleted_at IS NULL
+	AND m.marked_for_deletion_at IS NULL AND NOT m.is_adult
+WHERE s.user_id = $1 AND NOT EXISTS (
+	SELECT 1 FROM magazine_ban b WHERE b.user_id = $1 AND b.magazine_id = m.id
+		AND (b.expired_at IS NULL OR b.expired_at > now()))
+UNION ALL
+SELECT 'blocked_magazine', magazine_id, NULL, NULL FROM magazine_block WHERE user_id = $1
 UNION ALL
 -- A ban with an expiry in the past no longer applies.
-SELECT 'banned', magazine_id FROM magazine_ban
+SELECT 'banned', magazine_id, NULL, NULL FROM magazine_ban
 WHERE user_id = $1 AND (expired_at IS NULL OR expired_at > now())
 UNION ALL
-SELECT 'blocked_user', blocked_id FROM user_block WHERE blocker_id = $1
+SELECT 'blocked_user', blocked_id, NULL, NULL FROM user_block WHERE blocker_id = $1
 UNION ALL
 -- Mbin's only visit signal, updated at most daily.
-SELECT 'visited', id FROM "user" WHERE id = $1 AND last_active >= $2`
+SELECT 'visited', id, NULL, NULL FROM "user" WHERE id = $1 AND last_active >= $2`
 
 // joinedSQL is which of the given items the member has already taken part
 // in. $1 is the member's id, $2 the entry ids and $3 the post ids asked about.
