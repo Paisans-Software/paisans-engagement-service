@@ -1,5 +1,5 @@
-// Command paisans-engagement-service sends the community's weekly digest
-// email. See the README for its environment.
+// Command paisans-engagement-service sends the community's weekly digest and
+// welcomes its new members. See the README for its environment.
 package main
 
 import (
@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"os/signal"
 	"sync"
@@ -21,9 +22,11 @@ import (
 	"github.com/paisans-software/paisans-engagement-service/internal/mas"
 	"github.com/paisans-software/paisans-engagement-service/internal/matrix"
 	"github.com/paisans-software/paisans-engagement-service/internal/mbin"
+	"github.com/paisans-software/paisans-engagement-service/internal/mbinapi"
 	"github.com/paisans-software/paisans-engagement-service/internal/run"
 	"github.com/paisans-software/paisans-engagement-service/internal/store"
 	"github.com/paisans-software/paisans-engagement-service/internal/web"
+	"github.com/paisans-software/paisans-engagement-service/internal/welcome"
 )
 
 func main() {
@@ -80,6 +83,16 @@ func dmFrom(h *bot.Holder) func() run.DM {
 	}
 }
 
+// welcomeBotFrom is dmFrom for the welcomes.
+func welcomeBotFrom(h *bot.Holder) func() welcome.MatrixBot {
+	return func() welcome.MatrixBot {
+		if b := h.Get(); b != nil {
+			return b
+		}
+		return nil
+	}
+}
+
 func serve() error {
 	cfg, err := config.Load(os.Getenv)
 	if err != nil {
@@ -100,11 +113,12 @@ func serve() error {
 		return err
 	}
 
-	// stopped, once the digest loop or the bot supervisor is started, closes
-	// when both have returned and the Mbin pool is closed. It is waited on
-	// before the store's deferred Close, so a member being sent at shutdown
-	// gets their claim finished or released rather than left pending. stop
-	// comes first, so a return for any other reason also ends them.
+	// stopped, once the digest loop, the welcomes or the bot supervisor are
+	// started, closes when all have returned and the Mbin pool is closed. It
+	// is waited on before the store's deferred Close, so a member being sent
+	// at shutdown gets their claim finished or released rather than left
+	// pending. stop comes first, so a return for any other reason also ends
+	// them.
 	var stopped chan struct{}
 	defer func() {
 		if stopped == nil {
@@ -125,9 +139,17 @@ func serve() error {
 	// Unsubscribe links in mail already sent keep working without a mail
 	// host, so the route is served either way; only the sending is skipped.
 	if cfg.SMTP.Host == "" {
-		slog.Warn("no mail host is configured, so no digest email is sent")
+		slog.Warn("no mail host is configured, so no digest or welcome email is sent")
 	}
-	if cfg.SMTP.Host != "" || matrixOn {
+	mbinWelcomes := len(cfg.Welcome.MbinMissing()) == 0
+	if !mbinWelcomes {
+		slog.Info("Mbin welcomes are off", "missing", cfg.Welcome.MbinMissing())
+	}
+	matrixWelcomes := matrixOn && len(cfg.Welcome.RoomMissing()) == 0
+	if matrixOn && !matrixWelcomes {
+		slog.Info("Matrix welcomes are off", "missing", cfg.Welcome.RoomMissing())
+	}
+	if cfg.SMTP.Host != "" || matrixOn || mbinWelcomes {
 		src, err := mbin.Open(ctx, cfg.MbinDatabaseURL, cfg.MbinURL)
 		if err != nil {
 			return err
@@ -147,6 +169,21 @@ func serve() error {
 			SiteURL: cfg.MbinURL, PublicURL: cfg.PublicURL, Key: cfg.SigningKey,
 		}
 		var wg sync.WaitGroup
+		wr := &welcome.Runner{
+			Store: st, Mbin: src, Sender: sender, Names: runner.Names,
+			SiteURL: cfg.MbinURL, PublicURL: cfg.PublicURL, Key: cfg.SigningKey,
+			DailyLimit: cfg.Welcome.DailyLimit, Operators: cfg.Welcome.Operators,
+		}
+		if mbinWelcomes {
+			// The API is reached at Mbin's mesh address, and Mbin answers
+			// only for its own hostname.
+			mbinHost := ""
+			if u, err := url.Parse(cfg.MbinURL); err == nil {
+				mbinHost = u.Host
+			}
+			wr.API = mbinapi.New(cfg.Welcome.MbinAPIURL, mbinHost, cfg.Welcome.AgentClientID,
+				cfg.Welcome.AgentClientSecret, &http.Client{Timeout: 30 * time.Second})
+		}
 		if matrixOn {
 			h := bot.NewHolder()
 			runner.Matrix = dmFrom(h)
@@ -165,16 +202,32 @@ func serve() error {
 				},
 				Retry: time.Minute,
 			}
+			wr.Bot = welcomeBotFrom(h)
+			if matrixWelcomes {
+				wr.RoomName, wr.RoomAlias = cfg.Welcome.RoomName, cfg.Welcome.RoomAlias
+			}
 			wg.Add(1)
 			go func() {
 				defer wg.Done()
 				bot.Supervise(ctx, deps, h)
 			}()
 		}
-		wg.Add(1)
+		if cfg.SMTP.Host != "" || matrixOn {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				run.Loop(ctx, runner, time.Now, time.Minute)
+			}()
+		}
+		var lock welcome.LockHolder
+		wg.Add(2)
 		go func() {
 			defer wg.Done()
-			run.Loop(ctx, runner, time.Now, time.Minute)
+			lock.Hold(ctx, st, time.Minute)
+		}()
+		go func() {
+			defer wg.Done()
+			welcome.Loop(ctx, wr, time.Now, time.Minute, lock.Held)
 		}()
 		stopped = make(chan struct{})
 		// The pool closes only once both have returned, so a Week or a bot
@@ -200,7 +253,8 @@ func serve() error {
 			slog.Warn("shutdown", "error", err)
 		}
 	}()
-	slog.Info("listening", "addr", cfg.ListenAddr, "mail", cfg.SMTP.Host != "", "matrix", matrixOn)
+	slog.Info("listening", "addr", cfg.ListenAddr, "mail", cfg.SMTP.Host != "", "matrix", matrixOn,
+		"mbin_welcomes", mbinWelcomes, "matrix_welcomes", matrixWelcomes)
 	if err := srv.ListenAndServe(); !errors.Is(err, http.ErrServerClosed) {
 		return err
 	}

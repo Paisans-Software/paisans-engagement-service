@@ -14,6 +14,10 @@ import (
 // different schemas of one database each have their own bot.
 const BotLockID = 0x656e676167650002 // "engage\x00\x02"
 
+// WelcomeLockID identifies the lock held by the one copy that runs the Mbin
+// welcomes and the welcome email.
+const WelcomeLockID = 0x656e676167650003 // "engage\x00\x03"
+
 const (
 	lockPingEvery   = 15 * time.Second
 	lockPingTimeout = 10 * time.Second
@@ -30,6 +34,7 @@ func (s *Store) SetLockPing(every time.Duration) { s.lockPing.Store(int64(every)
 // Lock is the bot lock, held on a connection of its own.
 type Lock struct {
 	conn   *pgxpool.Conn
+	id     int64
 	every  time.Duration
 	lost   chan struct{}
 	stop   chan struct{}
@@ -43,12 +48,21 @@ type Lock struct {
 // another session holds it. The lock lasts until Release or until the
 // connection fails, which closes Lost.
 func (s *Store) TryBotLock(ctx context.Context) (l *Lock, ok bool, err error) {
+	return s.tryLock(ctx, BotLockID)
+}
+
+// TryWelcomeLock is TryBotLock for the welcome lock.
+func (s *Store) TryWelcomeLock(ctx context.Context) (l *Lock, ok bool, err error) {
+	return s.tryLock(ctx, WelcomeLockID)
+}
+
+func (s *Store) tryLock(ctx context.Context, id int64) (l *Lock, ok bool, err error) {
 	conn, err := s.pool.Acquire(ctx)
 	if err != nil {
 		return nil, false, err
 	}
 	var got bool
-	if err := conn.QueryRow(ctx, `SELECT pg_try_advisory_lock(`+BotLockKeySQL+`)`, BotLockID).Scan(&got); err != nil {
+	if err := conn.QueryRow(ctx, `SELECT pg_try_advisory_lock(`+BotLockKeySQL+`)`, id).Scan(&got); err != nil {
 		// The statement may have taken the lock before the error; closing the
 		// connection ends the session and releases it.
 		conn.Conn().Close(context.Background())
@@ -64,7 +78,7 @@ func (s *Store) TryBotLock(ctx context.Context) (l *Lock, ok bool, err error) {
 		every = lockPingEvery
 	}
 	pctx, cancel := context.WithCancel(context.Background())
-	l = &Lock{conn: conn, every: every, lost: make(chan struct{}), stop: make(chan struct{}), done: make(chan struct{}),
+	l = &Lock{conn: conn, id: id, every: every, lost: make(chan struct{}), stop: make(chan struct{}), done: make(chan struct{}),
 		ctx: pctx, cancel: cancel}
 	go l.watch()
 	return l, true, nil
@@ -119,7 +133,7 @@ func (l *Lock) Release() {
 				break
 			}
 			var unlocked bool
-			err := l.conn.QueryRow(context.Background(), `SELECT pg_advisory_unlock(`+BotLockKeySQL+`)`, BotLockID).Scan(&unlocked)
+			err := l.conn.QueryRow(context.Background(), `SELECT pg_advisory_unlock(`+BotLockKeySQL+`)`, l.id).Scan(&unlocked)
 			if err != nil || !unlocked {
 				// A session lock that is not released would stay with the
 				// pooled connection; closing the connection ends the session.

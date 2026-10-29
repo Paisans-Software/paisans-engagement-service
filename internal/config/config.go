@@ -70,9 +70,52 @@ func (m Matrix) vars() []variable {
 func (m Matrix) Enabled() bool { return len(m.Missing()) == 0 }
 
 // Missing names the unset variables.
-func (m Matrix) Missing() []string {
+func (m Matrix) Missing() []string { return missing(m.vars()) }
+
+// Welcome configures the welcomes. Each part runs only when its variables are
+// set: the Mbin welcomes need the three agent variables, the Matrix welcomes
+// the two room variables as well as Matrix, and the daily email a mail host.
+type Welcome struct {
+	// MbinAPIURL is where the service reaches Mbin's API; AgentClientID and
+	// AgentClientSecret are its agent OAuth client there.
+	MbinAPIURL, AgentClientID, AgentClientSecret string
+	// RoomName is the community room's name; RoomAlias the localpart of its
+	// alias.
+	RoomName, RoomAlias string
+	// DailyLimit is the most members the welcome email goes to in a day.
+	DailyLimit int
+	// Operators are the addresses alerts go to.
+	Operators []string
+}
+
+// DefaultWelcomeDailyLimit is the daily limit unless configured.
+const DefaultWelcomeDailyLimit = 50
+
+func (w Welcome) mbinVars() []variable {
+	return []variable{
+		{"ENGAGEMENT_MBIN_API_URL", w.MbinAPIURL},
+		{"ENGAGEMENT_MBIN_AGENT_CLIENT_ID", w.AgentClientID},
+		{"ENGAGEMENT_MBIN_AGENT_CLIENT_SECRET", w.AgentClientSecret},
+	}
+}
+
+func (w Welcome) roomVars() []variable {
+	return []variable{
+		{"ENGAGEMENT_COMMUNITY_ROOM_NAME", w.RoomName},
+		{"ENGAGEMENT_COMMUNITY_ROOM_ALIAS", w.RoomAlias},
+	}
+}
+
+// MbinMissing names the unset variables the Mbin welcomes need.
+func (w Welcome) MbinMissing() []string { return missing(w.mbinVars()) }
+
+// RoomMissing names the unset variables the Matrix welcomes need on top of
+// Matrix's own.
+func (w Welcome) RoomMissing() []string { return missing(w.roomVars()) }
+
+func missing(vs []variable) []string {
 	var out []string
-	for _, v := range m.vars() {
+	for _, v := range vs {
 		if v.value == "" {
 			out = append(out, v.name)
 		}
@@ -81,6 +124,7 @@ func (m Matrix) Missing() []string {
 }
 
 var (
+	aliasRE     = regexp.MustCompile(`^[a-z0-9-]+$`)
 	localpartRE = regexp.MustCompile(`^[a-z0-9._=/-]+$`)
 	ulidRE      = regexp.MustCompile(`^[0-9A-HJKMNP-TV-Z]{26}$`)
 )
@@ -99,6 +143,7 @@ type Config struct {
 	SigningKey []byte
 	SMTP       SMTP
 	Matrix     Matrix
+	Welcome    Welcome
 }
 
 func Load(getenv func(string) string) (Config, error) {
@@ -158,6 +203,19 @@ func Load(getenv func(string) string) (Config, error) {
 		BotLocalpart:     getenv("ENGAGEMENT_MATRIX_BOT_LOCALPART"),
 		BotDisplayName:   DefaultBotDisplayName,
 	}
+	c.Welcome = Welcome{
+		MbinAPIURL: getenv("ENGAGEMENT_MBIN_API_URL"), AgentClientID: getenv("ENGAGEMENT_MBIN_AGENT_CLIENT_ID"),
+		AgentClientSecret: getenv("ENGAGEMENT_MBIN_AGENT_CLIENT_SECRET"),
+		RoomName:          strings.TrimSpace(getenv("ENGAGEMENT_COMMUNITY_ROOM_NAME")),
+		RoomAlias:         getenv("ENGAGEMENT_COMMUNITY_ROOM_ALIAS"),
+		DailyLimit:        intIn("ENGAGEMENT_WELCOME_DAILY_LIMIT", strconv.Itoa(DefaultWelcomeDailyLimit), 1, 1_000_000),
+	}
+	for _, a := range strings.Split(getenv("ENGAGEMENT_OPERATOR_EMAILS"), ",") {
+		if a = strings.TrimSpace(a); a != "" {
+			c.Welcome.Operators = append(c.Welcome.Operators, a)
+		}
+	}
+	errs = append(errs, c.Welcome.validate()...)
 	// A display name of only spaces is set, not empty, and refused below.
 	displayName := getenv("ENGAGEMENT_MATRIX_BOT_DISPLAY_NAME")
 	if displayName != "" {
@@ -216,6 +274,23 @@ func baseURLs(vs []variable) []error {
 		}
 		if strings.HasSuffix(u.value, "/") {
 			errs = append(errs, fmt.Errorf("%s must not end in /", u.name))
+		}
+	}
+	return errs
+}
+
+func (w Welcome) validate() []error {
+	errs := oneLine(append(w.mbinVars(), w.roomVars()...))
+	errs = append(errs, baseURLs([]variable{{"ENGAGEMENT_MBIN_API_URL", w.MbinAPIURL}})...)
+	if w.RoomAlias != "" && !aliasRE.MatchString(w.RoomAlias) {
+		errs = append(errs, errors.New("ENGAGEMENT_COMMUNITY_ROOM_ALIAS must be lower case letters, digits and -"))
+	}
+	for _, a := range w.Operators {
+		// An address reaches a mail header, where a line break would start
+		// a header of its own.
+		if strings.ContainsAny(a, "\r\n") {
+			errs = append(errs, errors.New("ENGAGEMENT_OPERATOR_EMAILS must be one line"))
+			break
 		}
 	}
 	return errs

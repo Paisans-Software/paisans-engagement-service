@@ -91,6 +91,18 @@ The image has no shell, so `exec` names the binary. `docker compose run --rm app
 * **The schedule does not catch up.** The schedule sends only on the Monday itself, so after a test with `--member` on a later day the rest of that week goes out only if `send` is run again without it.
 * **Exit status.** `send` logs the same summary line as a scheduled run and exits 0, or logs the error and exits 1. Without `ENGAGEMENT_SMTP_HOST` an email send refuses before reading anything. A member whose digest the relay or the homeserver never accepted is left unclaimed and the exit is 1, so running `send` again reaches them.
 
+## Welcomes
+
+The service announces new members where the community already is, so existing members can greet them. The bot never greets anyone itself and never acts as a member, except to subscribe a newcomer to the welcome magazine.
+
+* **On Mbin.** Every five minutes, up to 50 members who joined Mbin and are not welcomed yet get one thread between them in the local magazine `/m/welcome`, titled with their names (`Welcome @alice, @bob and 4 others`) and mentioning each of them, posted by the agent bot; a longer backlog goes out 50 at a time, oldest first. Each newcomer is then subscribed to `/m/welcome`, one at a time so one that fails holds up nobody else; nobody else ever is. A newcomer is an approved member, by the digest's member rule, created after Mbin welcomes first ran on this deployment and within the last 21 days. A pending account is welcomed in the batch after its approval, if that comes within 21 days. Every batch checks that `/m/welcome` exists, creates it if Mbin has none, and makes its new threads moderator only; comments stay open. Only the magazine's owner may make it moderator only, so a bot that is not the owner tells the operators and asks again a day later. A batch is recorded before its thread is posted, and a batch whose post went unanswered is looked for in `/m/welcome` by its title before it is posted again, so a lost answer never makes a second thread. A post Mbin refuses is tried again every batch with the same newcomers, and the operators are told what Mbin said. Every change goes through Mbin's API, as the agent client `ENGAGEMENT_MBIN_AGENT_CLIENT_ID`, which Mbin gives its agent role; the service still never writes to Mbin's database. Nothing in `/m/welcome` appears in the weekly digest, its figures included.
+* **On Matrix.** Every five minutes, up to 50 members whose Matrix account is new, linked through MAS like the digest's and created after Matrix welcomes first ran, get one message between them in the community room, each named as a mention so their client notifies them. The bot reads MAS's users in creation order from when Matrix welcomes first ran, so a backlog goes out 50 at a time and nobody is dropped. The bot finds the room by the alias `#ENGAGEMENT_COMMUNITY_ROOM_ALIAS:<server_name>`, joins it, and creates it under `ENGAGEMENT_COMMUNITY_ROOM_NAME` when there is none: public within the homeserver, listed in its room directory, not federated and not encrypted. A room someone else made is joined as it is. Changing the alias makes the bot find or create the room under the new one at its next start; the old room is left alone. The homeserver joins every new account to the room. The Mbin and Matrix welcomes are independent: a member is welcomed on each platform they join.
+* **The welcome email.** Once a day from 09:00 in the container's local time, the Mbin newcomers welcomed since the last email that went out go to at most `ENGAGEMENT_WELCOME_DAILY_LIMIT` members (50 by default): 80% of the places, rounded down, to the members most active in the last 30 days (threads, microblog posts, comments and votes), the rest drawn at random from the members left. Each email names only the newcomers whose thread the member has not commented on; a member with none left is passed over for the next. Recipients follow the digest email's rules, less anyone unsubscribed from welcome emails and the newcomers themselves. Each send is recorded before the next starts, so a restart, a retry or a second copy never mails anyone twice or goes past the limit. A day's email is sent only that day: a service down from 09:00 to midnight sends none, and that day's newcomers, like those of a day whose every send failed, are named in the next day's email. Activity counts only local content: comments and votes on federated threads are left out.
+* **Its own unsubscribe.** The welcome email's link is signed for welcome emails alone: it unsubscribes from them and leaves the digest as it is, and a digest link leaves welcome emails alone. It answers like the digest's, with `List-Unsubscribe` headers.
+* **Operator alerts.** When the bot cannot create or post in `/m/welcome`, subscribe a newcomer, or find, join or post in the community room, the operators in `ENGAGEMENT_OPERATOR_EMAILS` get an email, and a Matrix message from the bot when their address belongs to a member it can message. At most one alert of a kind goes out a day while the problem lasts, and an alert that reached no operator does not count. A newcomer the bot has failed to subscribe for more than a day is an alert too.
+* **One copy runs them.** The Matrix welcomes run on the copy that runs the bot; the Mbin welcomes, the email and the pruning on the copy holding a welcome lock of its own.
+* **Kept for 21 days.** Who was welcomed where, which email named them, who was mailed which day and the last alert of each kind are deleted after 21 days, except an Mbin newcomer whose subscription is not settled, who is kept until it is. When welcomes first ran on each platform, and who unsubscribed from welcome emails, are kept.
+
 ## Mbin must be clustered
 
 The service reads Mbin only when Mbin has `placement: cluster` in Paisans. Its read only database role is created in the cluster's Postgres, where Paisans already creates each clustered app's role, and the service reaches it through the site's HAProxy. A pinned Mbin keeps its database on its own compose network with only the role its image created, so the toolkit refuses a deployment that points the engagement blueprint at a pinned Mbin with its `engagement-source-not-clustered` check. Cluster Mbin before enabling the blueprint.
@@ -105,8 +117,8 @@ The service never writes to Mbin's database, and the role it uses cannot. The ro
 | `entry_comment` | `id`, `user_id`, `entry_id`, `magazine_id`, `body`, `up_votes`, `favourite_count`, `visibility`, `is_adult`, `created_at` |
 | `post` | `id`, `user_id`, `magazine_id`, `slug`, `body`, `comment_count`, `score`, `is_adult`, `visibility`, `ap_id`, `created_at`, `last_active` |
 | `post_comment` | `id`, `user_id`, `post_id`, `magazine_id`, `body`, `up_votes`, `favourite_count`, `visibility`, `is_adult`, `created_at` |
-| `entry_vote` | `user_id`, `entry_id`, `choice` |
-| `post_vote` | `user_id`, `post_id`, `choice` |
+| `entry_vote` | `user_id`, `entry_id`, `choice`, `created_at` |
+| `post_vote` | `user_id`, `post_id`, `choice`, `created_at` |
 | `favourite` | `user_id`, `entry_id`, `post_id` |
 | `bookmark` | `user_id`, `entry_id`, `post_id` |
 | `notification` | `user_id`, `status`, `entry_id`, `entry_comment_id`, `post_id`, `post_comment_id` |
@@ -115,11 +127,11 @@ The service never writes to Mbin's database, and the role it uses cannot. The ro
 | `magazine_block` | `user_id`, `magazine_id` |
 | `magazine_ban` | `user_id`, `magazine_id`, `expired_at` |
 | `user_block` | `blocker_id`, `blocked_id` |
-| `user` | `id`, `username`, `email`, `is_verified`, `is_banned`, `is_deleted`, `marked_for_deletion_at`, `visibility`, `type`, `ap_id`, `oauth_oidc_id`, `last_active`, `created_at` |
+| `user` | `id`, `username`, `email`, `is_verified`, `is_banned`, `is_deleted`, `marked_for_deletion_at`, `visibility`, `type`, `ap_id`, `oauth_oidc_id`, `last_active`, `created_at`, `application_status` |
 
 Mbin keeps credentials in its database, and the role never sees them. These tables are never granted: `sessions`, `rememberme_token`, `oauth2_access_token`, `oauth2_refresh_token`, `oauth2_authorization_code`, `oauth2_client`, `oauth2_user_consent`, `reset_password_request`, `user_push_subscription`, `site`, `settings`, `messenger_messages`, `message`, `message_thread`, `user_note`, `ap_activity` and `activity`. On `user`, these columns are never granted: `password`, `totp_secret`, `totp_backup_codes`, `private_key`, `old_private_key`, `ip`, and every `oauth_*_id` column except `oauth_oidc_id`. A role that could read any of them could log in as a member.
 
-The service's own database holds who unsubscribed, which member was emailed which week, which threads each sent digest showed, each member's Matrix setting, account and room, which member was sent a message which week, each member's digest for the week, as built for that week's sends (deleted at expiry), the latest Matrix preview of a week's digest per member (deleted after 24 hours), and the bot's own state: its sync token, access token and MAS ids.
+The service's own database holds who unsubscribed, which member was emailed which week, which threads each sent digest showed, each member's Matrix setting, account and room, which member was sent a message which week, each member's digest for the week, as built for that week's sends (deleted at expiry), the latest Matrix preview of a week's digest per member (deleted after 24 hours), the bot's own state: its sync token, access token and MAS ids, and the welcome records described under Welcomes.
 
 ## Environment
 
@@ -131,8 +143,8 @@ The service's own database holds who unsubscribed, which member was emailed whic
 | `ENGAGEMENT_MBIN_DATABASE_URL` | Mbin's Postgres database, through a role that can only read |
 | `ENGAGEMENT_MBIN_URL` | `https://<Mbin hostname>`, no trailing slash: every link to a thread or magazine and the button start with it |
 | `ENGAGEMENT_META_TITLE` | the community's name, as in "This week on Paisans": it names the community in the subject, the headings, the footer and the Matrix message |
-| `ENGAGEMENT_SIGNING_KEY` | 32 bytes as unpadded base64url (43 characters): signs the unsubscribe links |
-| `ENGAGEMENT_SMTP_HOST` | the mail host; empty means no digest email is sent |
+| `ENGAGEMENT_SIGNING_KEY` | 32 bytes as unpadded base64url (43 characters): signs the unsubscribe links of both emails |
+| `ENGAGEMENT_SMTP_HOST` | the mail host; empty means no digest or welcome email is sent |
 | `ENGAGEMENT_SMTP_PORT` | default `587` |
 | `ENGAGEMENT_SMTP_USER`, `ENGAGEMENT_SMTP_PASSWORD` | mail credentials, optional |
 | `ENGAGEMENT_SMTP_FROM` | the sender address, required once there is a mail host |
@@ -146,9 +158,16 @@ The service's own database holds who unsubscribed, which member was emailed whic
 | `ENGAGEMENT_MATRIX_BOT_LOCALPART` | the bot's localpart, from the `bot_localpart` setting, `community-bot` by default |
 | `ENGAGEMENT_MATRIX_BOT_DISPLAY_NAME` | the bot's display name, from the `bot_display_name` setting, optional; `Community Bot` when unset or empty, at most 256 characters, one line |
 
-The bot runs only when all seven Matrix variables are set (the display name is not one of them); otherwise one log line says Matrix is off and the service sends the email alone.
+| `ENGAGEMENT_MBIN_API_URL` | where the service reaches Mbin's API, its mesh address, no trailing slash; every request carries the host of `ENGAGEMENT_MBIN_URL` as its `Host` |
+| `ENGAGEMENT_MBIN_AGENT_CLIENT_ID`, `ENGAGEMENT_MBIN_AGENT_CLIENT_SECRET` | the agent OAuth client the Mbin welcomes act through, declared to Mbin by the mbin app |
+| `ENGAGEMENT_COMMUNITY_ROOM_NAME` | the community room's name, from the `community_room_name` setting |
+| `ENGAGEMENT_COMMUNITY_ROOM_ALIAS` | the localpart of the community room's alias, lower case letters, digits and `-` |
+| `ENGAGEMENT_WELCOME_DAILY_LIMIT` | the most members the welcome email goes to in a day, default `50`, from the `welcome_email_daily_limit` setting |
+| `ENGAGEMENT_OPERATOR_EMAILS` | the operators' addresses, comma separated, in any order, for alerts |
 
-The container's time zone sets the send time, so mount the host's `/etc/localtime` read only.
+The bot runs only when all seven Matrix variables are set (the display name is not one of them); otherwise one log line says Matrix is off and the service sends the email alone. The Mbin welcomes run only when the three `ENGAGEMENT_MBIN_*` agent variables are set, the Matrix welcomes only when the bot runs and both room variables are set, and the welcome email only with a mail host; a part that is off says so in one log line.
+
+The container's time zone sets the send times, so mount the host's `/etc/localtime` read only.
 
 ## Tests
 

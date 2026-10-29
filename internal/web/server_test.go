@@ -410,3 +410,26 @@ func TestPreviewPage(t *testing.T) {
 	wantBody(t, doAs(h, "GET", previewPath, "sub-2"), 404, badBody)
 	wantBody(t, doAs(h, "GET", "/d/preview/2026-10-12", "sub-1"), 404, badBody)
 }
+
+func TestWelcomeUnsubscribeIsItsOwnList(t *testing.T) {
+	st := storetest.New(t)
+	h := NewServer(Options{Store: st, Key: key})
+	wantBody(t, do(h, "GET", "/u/"+token.SignFor(key, token.Welcome, "sub-w"), ""), 200, "You're unsubscribed from welcome emails.")
+	if unsubscribed(t, st, "sub-w") {
+		t.Fatal("a welcome link unsubscribed from the digest")
+	}
+	got, err := st.WelcomeUnsubscribed(context.Background())
+	if err != nil || !got["sub-w"] {
+		t.Fatalf("welcome unsubscribes = %v, %v", got, err)
+	}
+	wantBody(t, do(h, "POST", "/u/"+token.Sign(key, "sub-d"), ""), 200, okBody)
+	if got, _ := st.WelcomeUnsubscribed(context.Background()); got["sub-d"] {
+		t.Fatal("a digest link unsubscribed from welcome emails")
+	}
+	if rec := do(h, "HEAD", "/u/"+token.SignFor(key, token.Welcome, "sub-x"), ""); rec.Code != 200 {
+		t.Fatalf("HEAD = %d", rec.Code)
+	}
+	if got, _ := st.WelcomeUnsubscribed(context.Background()); got["sub-x"] {
+		t.Fatal("HEAD unsubscribed")
+	}
+}

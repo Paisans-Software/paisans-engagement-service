@@ -92,3 +92,26 @@ func TestBotLockReleaseCutsPing(t *testing.T) {
 		}
 	}
 }
+
+func TestWelcomeLockIsItsOwn(t *testing.T) {
+	s := storetest.New(t)
+	ctx := context.Background()
+	b, ok, err := s.TryBotLock(ctx)
+	if err != nil || !ok {
+		t.Fatal(ok, err)
+	}
+	defer b.Release()
+	w, ok, err := s.TryWelcomeLock(ctx)
+	if err != nil || !ok {
+		t.Fatalf("welcome lock while the bot lock is held: %v, %v", ok, err)
+	}
+	if _, ok, _ := s.TryWelcomeLock(ctx); ok {
+		t.Fatal("the welcome lock was taken twice")
+	}
+	w.Release()
+	w2, ok, err := s.TryWelcomeLock(ctx)
+	if err != nil || !ok {
+		t.Fatalf("welcome lock after release: %v, %v", ok, err)
+	}
+	w2.Release()
+}

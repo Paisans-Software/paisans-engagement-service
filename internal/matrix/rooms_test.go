@@ -194,3 +194,38 @@ func TestSyncNotCutByClientTimeout(t *testing.T) {
 		t.Fatalf("Sync cut short: %v", err)
 	}
 }
+
+const wantCommunityRoomBody = `{"preset":"public_chat","visibility":"public","name":"Riverside Community",
+ "room_alias_name":"riverside-community",
+ "creation_content":{"m.federate":false},
+ "initial_state":[{"type":"m.room.history_visibility","state_key":"","content":{"history_visibility":"shared"}}]}`
+
+func TestCommunityRoom(t *testing.T) {
+	c, srv, _ := newClient(t, fast)
+	ctx := context.Background()
+	if _, found, err := c.ResolveAlias(ctx, "#riverside-community:example.org"); err != nil || found {
+		t.Fatalf("ResolveAlias before = %v, %v", found, err)
+	}
+	id, err := c.CreateCommunityRoom(ctx, "Riverside Community", "riverside-community")
+	if err != nil || id == "" {
+		t.Fatalf("CreateCommunityRoom = %q, %v", id, err)
+	}
+	var want map[string]any
+	if err := json.Unmarshal([]byte(wantCommunityRoomBody), &want); err != nil {
+		t.Fatal(err)
+	}
+	if got := srv.Rooms()[0].Request; !reflect.DeepEqual(got, want) {
+		t.Fatalf("createRoom body = %v, want %v", got, want)
+	}
+	got, found, err := c.ResolveAlias(ctx, "#riverside-community:example.org")
+	if err != nil || !found || got != id {
+		t.Fatalf("ResolveAlias after = %q, %v, %v", got, found, err)
+	}
+	joined, err := c.Join(ctx, "#riverside-community:example.org")
+	if err != nil || joined != id {
+		t.Fatalf("Join = %q, %v", joined, err)
+	}
+	if j := srv.Joins(); len(j) != 1 || j[0] != "#riverside-community:example.org" {
+		t.Fatalf("joins = %v", j)
+	}
+}

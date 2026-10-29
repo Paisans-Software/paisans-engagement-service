@@ -5,6 +5,17 @@ All notable changes to this project are documented here, in the
 
 ## [Unreleased]
 
+### Added
+
+- Every five minutes, one thread in `/m/welcome` names the members who just joined Mbin and subscribes them to it; the bot creates the magazine, moderator only, when Mbin has none.
+- Every five minutes, one message in the community room names the members whose Matrix account is new; the bot joins the room, or creates it when there is none.
+- A daily welcome email asks up to `ENGAGEMENT_WELCOME_DAILY_LIMIT` active members to greet newcomers they have not greeted, with its own unsubscribe link.
+- Operators named in `ENGAGEMENT_OPERATOR_EMAILS` get at most one alert a day for each way the welcomes can fail.
+
+### Changed
+
+- The weekly digest, its figures included, leaves out the local `/m/welcome` magazine.
+
 ## [0.2.0] - 2026-10-29
 
 ### Added
