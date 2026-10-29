@@ -12,6 +12,7 @@ All notable changes to this project are documented here, in the
 - Each sent digest can be read for four weeks at /d/ and the week's date, by the signed-in member it was sent to, behind the community's sign-in gate.
 - A `--preview` option for `send --member` that mails the member the digest a brand-new member would get this week, without claiming them for the week.
 - A section in the digest offering each member up to three of the week's new threads and microblog posts that nobody has answered yet.
+- A section in the digest and the Matrix message with the week's busiest threads from magazines the member does not follow, one per magazine, naming the magazines they follow or asking them to start.
 - A `--matrix` option for `send --member` that sends the member's Matrix message for the week, or with `--preview` a preview message whose link opens for a day, instead of the email.
 
 ### Changed
@@ -23,7 +24,14 @@ All notable changes to this project are documented here, in the
 - The digest email's HTML has a head with a title.
 - Every thread in the digest shows only its title and magazine, with no counts, featured label or microblog label. A microblog post is quoted instead of titled.
 - The digest email's subject and heading read "This week on" the community rather than "Your week on".
+- The Matrix message starts "This week on" the community, as the email does, with a blank line between its sections.
+- The Matrix message's plain text gives each thread's link below its title.
+- The email's button reads "View Everything".
 - Microblog posts and quoted comments in the digest drop their links and end with an ellipsis where one was. A post that is only a link is named by its site.
+
+### Removed
+
+- `ENGAGEMENT_INSTANCE_TITLE`: the button no longer names Mbin.
 
 ## [0.1.1] - 2026-10-27
 

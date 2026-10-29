@@ -359,6 +359,7 @@ func (r *Runner) digestFor(ctx context.Context, m digest.Member, from, week time
 		if !ok {
 			return d, false, nil
 		}
+		built.AddDiscover(items, v)
 		built.AddUnanswered(fresh, v, r.Rand)
 		content, err := json.Marshal(built)
 		if err != nil {
@@ -535,7 +536,7 @@ func (r *Runner) matrixPass(ctx context.Context, members []digest.Member, week t
 		// Every member's link for the week is the same: the sign-in gate in
 		// front of the page names the member.
 		link := r.PublicURL + "/d/" + week.Format("2006-01-02")
-		out, err := dm.Deliver(dctx, t, bot.TxnID(m.Subject, week), bot.Weekly(dg, r.Names.Meta, link))
+		out, err := dm.Deliver(dctx, t, bot.TxnID(m.Subject, week), bot.Weekly(dg, r.Names.Meta, r.SiteURL, link))
 		// Released or finished even when the day or ctx has ended, or the
 		// member would stay claimed and unsent for the week.
 		wctx, wcancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
@@ -657,7 +658,7 @@ func (r *Runner) PreviewMatrix(ctx context.Context, week time.Time, username str
 		return fmt.Errorf("store the preview: %w", err)
 	}
 	link := r.PublicURL + "/d/preview/" + week.Format("2006-01-02")
-	out, err := dm.Deliver(ctx, t, bot.PreviewTxnID(), bot.WeeklyPreview(d, r.Names.Meta, link))
+	out, err := dm.Deliver(ctx, t, bot.PreviewTxnID(), bot.WeeklyPreview(d, r.Names.Meta, r.SiteURL, link))
 	switch {
 	case err != nil:
 		return fmt.Errorf("matrix preview: %w", err)
@@ -760,6 +761,7 @@ func (r *Runner) blankDigest(ctx context.Context, week time.Time) (digest.Digest
 	if !ok {
 		return d, errors.New("the week has nothing for even a new member, so there is no digest to preview")
 	}
+	d.AddDiscover(items, digest.View{})
 	d.AddUnanswered(fresh, digest.View{}, r.Rand)
 	return d, nil
 }
@@ -770,7 +772,7 @@ func sent(d digest.Digest) []store.Item {
 	if d.Featured != nil {
 		out = append(out, store.Item{Kind: string(d.Featured.Item.Key.Kind), ID: d.Featured.Item.Key.ID})
 	}
-	for _, it := range slices.Concat(d.More, d.Unanswered) {
+	for _, it := range slices.Concat(d.More, d.Discover, d.Unanswered) {
 		out = append(out, store.Item{Kind: string(it.Key.Kind), ID: it.Key.ID})
 	}
 	return out

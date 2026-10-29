@@ -143,7 +143,7 @@ func serve() error {
 		}
 		runner := &run.Runner{
 			Store: st, Source: src, Sender: sender,
-			Names:   mail.Names{Instance: cfg.InstanceTitle, Meta: cfg.MetaTitle},
+			Names:   mail.Names{Meta: cfg.MetaTitle},
 			SiteURL: cfg.MbinURL, PublicURL: cfg.PublicURL, Key: cfg.SigningKey,
 		}
 		var wg sync.WaitGroup
@@ -188,7 +188,7 @@ func serve() error {
 
 	srv := &http.Server{Addr: cfg.ListenAddr, Handler: web.NewServer(web.Options{
 		Store: st, Key: cfg.SigningKey, Matrix: cfg.Matrix.Enabled(),
-		Names: mail.Names{Instance: cfg.InstanceTitle, Meta: cfg.MetaTitle}, SiteURL: cfg.MbinURL,
+		Names: mail.Names{Meta: cfg.MetaTitle}, SiteURL: cfg.MbinURL,
 	}), ReadHeaderTimeout: 10 * time.Second}
 	done := make(chan struct{})
 	go func() {

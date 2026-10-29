@@ -161,7 +161,7 @@ func saveDigest(t *testing.T, st *store.Store, subject string) {
 
 func webServer(st *store.Store, now time.Time) http.Handler {
 	return NewServer(Options{
-		Store: st, Key: key, Names: mail.Names{Instance: "Talk", Meta: "Talk Community"},
+		Store: st, Key: key, Names: mail.Names{Meta: "Talk Community"},
 		SiteURL: "https://talk.example.org/", Now: func() time.Time { return now },
 	})
 }
@@ -187,7 +187,7 @@ func TestWebDigest(t *testing.T) {
 		t.Fatalf("status = %d", rec.Code)
 	}
 	body := rec.Body.String()
-	for _, want := range []string{"grinders", "See everything on Talk", "Oct 12 – Oct 18"} {
+	for _, want := range []string{"grinders", "View Everything", "Oct 12 – Oct 18"} {
 		if !strings.Contains(body, want) {
 			t.Errorf("body lacks %q", want)
 		}

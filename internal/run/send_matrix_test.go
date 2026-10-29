@@ -25,7 +25,7 @@ func get(t *testing.T, s *store.Store, subject, link string, now time.Time) *htt
 	if !ok {
 		t.Fatalf("link %q is not on the engagement hostname", link)
 	}
-	h := web.NewServer(web.Options{Store: s, Key: key, Names: mail.Names{Instance: "Talk", Meta: "Talk · Example Community"},
+	h := web.NewServer(web.Options{Store: s, Key: key, Names: mail.Names{Meta: "Talk · Example Community"},
 		SiteURL: "https://talk.example.org/", Now: func() time.Time { return now }})
 	req := httptest.NewRequest(http.MethodGet, path, nil)
 	req.Header.Set("X-Auth-Request-User", subject)
@@ -56,7 +56,7 @@ func TestMatrixPreview(t *testing.T) {
 	if !strings.HasPrefix(d.TxnID, "preview-") || d.TxnID == bot.TxnID("sub-1", week) {
 		t.Fatalf("txn id %q", d.TxnID)
 	}
-	if !strings.HasPrefix(d.Notice.Body, "[Preview] Your weekly digest from Talk · Example Community") ||
+	if !strings.HasPrefix(d.Notice.Body, "[Preview] This week on Talk · Example Community") ||
 		!strings.Contains(d.Notice.Body, "• grinders") {
 		t.Fatalf("body %q", d.Notice.Body)
 	}

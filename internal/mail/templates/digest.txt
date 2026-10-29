@@ -7,12 +7,17 @@ This week on {{.Meta}}
 {{if .Excerpt}}"{{.Excerpt}}"
 {{end}}{{end}}{{range .More}}
 {{template "item" .}}
-{{end}}{{if .Unanswered}}
+{{end}}{{if .Discover}}
+{{.DiscoverHeading}}
+{{.DiscoverLine}}
+{{range .Discover}}
+{{template "item" .}}
+{{end}}{{end}}{{if .Unanswered}}
 {{.UnansweredHeading}}
 {{range .Unanswered}}
 {{template "item" .}}
 {{end}}{{end}}
-See everything on {{.Instance}}: {{.SiteURL}}
+View Everything: {{.SiteURL}}
 
 You get this because you're a member of {{.Meta}}.
 Unsubscribe from the weekly digest: {{.Unsubscribe}}

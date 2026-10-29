@@ -94,12 +94,11 @@ type Config struct {
 	DatabaseURL, MbinDatabaseURL string
 	// MbinURL is the community's Mbin, which the digest links to.
 	MbinURL string
-	// InstanceTitle is Mbin's site title, used on the button; MetaTitle names
-	// the community everywhere else in the email.
-	InstanceTitle, MetaTitle string
-	SigningKey               []byte
-	SMTP                     SMTP
-	Matrix                   Matrix
+	// MetaTitle names the community in the digest.
+	MetaTitle  string
+	SigningKey []byte
+	SMTP       SMTP
+	Matrix     Matrix
 }
 
 func Load(getenv func(string) string) (Config, error) {
@@ -143,7 +142,6 @@ func Load(getenv func(string) string) (Config, error) {
 		DatabaseURL:     req("ENGAGEMENT_DATABASE_URL"),
 		MbinDatabaseURL: req("ENGAGEMENT_MBIN_DATABASE_URL"),
 		MbinURL:         req("ENGAGEMENT_MBIN_URL"),
-		InstanceTitle:   req("ENGAGEMENT_INSTANCE_TITLE"),
 		MetaTitle:       req("ENGAGEMENT_META_TITLE"),
 		SigningKey:      key("ENGAGEMENT_SIGNING_KEY"),
 		SMTP: SMTP{
@@ -176,7 +174,6 @@ func Load(getenv func(string) string) (Config, error) {
 	// value start a header of its own.
 	errs = append(errs, oneLine([]variable{
 		{"ENGAGEMENT_META_TITLE", c.MetaTitle},
-		{"ENGAGEMENT_INSTANCE_TITLE", c.InstanceTitle},
 		{"ENGAGEMENT_PUBLIC_URL", c.PublicURL},
 		{"ENGAGEMENT_MBIN_URL", c.MbinURL},
 	})...)

@@ -26,7 +26,7 @@ func link(e *env, subject, username string) string {
 	return id
 }
 
-func note() Notice { return Weekly(digest.Digest{}, "Talk", "L") }
+func note() Notice { return Weekly(digest.Digest{}, "Talk", "https://talk", "L") }
 
 func TestPrepareLooksUpAndCaches(t *testing.T) {
 	e, b := started(t)

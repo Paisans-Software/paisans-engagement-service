@@ -14,7 +14,6 @@ func env(over map[string]string) func(string) string {
 		"ENGAGEMENT_DATABASE_URL":      "postgres://own",
 		"ENGAGEMENT_MBIN_DATABASE_URL": "postgres://mbin",
 		"ENGAGEMENT_MBIN_URL":          "https://forum.example.org",
-		"ENGAGEMENT_INSTANCE_TITLE":    "Example Forum",
 		"ENGAGEMENT_META_TITLE":        "Example",
 		"ENGAGEMENT_SIGNING_KEY":       key,
 	}
@@ -41,7 +40,7 @@ func TestLoadValid(t *testing.T) {
 	want := Config{
 		ListenAddr: "127.0.0.1:9000", PublicURL: "https://digest.example.org",
 		DatabaseURL: "postgres://own", MbinDatabaseURL: "postgres://mbin", MbinURL: "https://forum.example.org",
-		InstanceTitle: "Example Forum", MetaTitle: "Example", SigningKey: make([]byte, 32),
+		MetaTitle: "Example", SigningKey: make([]byte, 32),
 		SMTP:   SMTP{Host: "mail.example.org", Port: 465, User: "u", Password: "p", From: "digest@example.org", FromName: "Example", TLS: "tls"},
 		Matrix: Matrix{BotDisplayName: "Community Bot"},
 	}
@@ -67,7 +66,7 @@ func TestLoadReportsEveryProblem(t *testing.T) {
 	}
 	for _, k := range []string{
 		"ENGAGEMENT_PUBLIC_URL", "ENGAGEMENT_DATABASE_URL", "ENGAGEMENT_MBIN_DATABASE_URL", "ENGAGEMENT_MBIN_URL",
-		"ENGAGEMENT_INSTANCE_TITLE", "ENGAGEMENT_META_TITLE", "ENGAGEMENT_SIGNING_KEY",
+		"ENGAGEMENT_META_TITLE", "ENGAGEMENT_SIGNING_KEY",
 	} {
 		if !strings.Contains(err.Error(), k) {
 			t.Errorf("error does not name %s: %v", k, err)
@@ -139,7 +138,7 @@ func TestLoadMissingKeyOneError(t *testing.T) {
 // These values reach mail headers or links, where a line break would let
 // the value add a header of its own.
 func TestLoadRejectsLineBreaks(t *testing.T) {
-	for _, k := range []string{"ENGAGEMENT_META_TITLE", "ENGAGEMENT_INSTANCE_TITLE", "ENGAGEMENT_PUBLIC_URL", "ENGAGEMENT_MBIN_URL"} {
+	for _, k := range []string{"ENGAGEMENT_META_TITLE", "ENGAGEMENT_PUBLIC_URL", "ENGAGEMENT_MBIN_URL"} {
 		for _, br := range []string{"\r", "\n"} {
 			v := "https://x.example.org" + br + "Bcc: someone@example.org"
 			_, err := Load(env(map[string]string{k: v}))

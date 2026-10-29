@@ -4,9 +4,11 @@
 package mbin
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"fmt"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -223,13 +225,17 @@ func (s *Source) View(ctx context.Context, m digest.Member, from, to time.Time, 
 		"blocked_user":     v.BlockedUsers,
 	}
 	var (
-		set string
-		id  int64
+		set         string
+		id          int64
+		name, title string
 	)
-	_, err = pgx.ForEachRow(rows, []any{&set, &id}, func() error {
-		if set == "visited" {
+	_, err = pgx.ForEachRow(rows, []any{&set, &id, &name, &title}, func() error {
+		switch set {
+		case "visited":
 			v.Visited = true
-		} else {
+		case "following":
+			v.Following = append(v.Following, digest.Magazine{ID: id, Name: name, Title: oneLine(title)})
+		default:
 			sets[set][id] = true
 		}
 		return nil
@@ -237,6 +243,9 @@ func (s *Source) View(ctx context.Context, m digest.Member, from, to time.Time, 
 	if err != nil {
 		return v, fmt.Errorf("view of %d: %w", m.ID, err)
 	}
+	slices.SortFunc(v.Following, func(a, b digest.Magazine) int {
+		return cmp.Or(cmp.Compare(a.Name, b.Name), cmp.Compare(a.ID, b.ID))
+	})
 
 	if len(items) == 0 {
 		return v, nil

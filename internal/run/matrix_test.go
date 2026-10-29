@@ -650,7 +650,7 @@ func TestFrozenDigestSurvivesShown(t *testing.T) {
 	if len(got) != 1 {
 		t.Fatalf("deliveries: %v", dm.subjects())
 	}
-	want := bot.Weekly(stored, "Talk · Example Community", link(t, got[0].Notice))
+	want := bot.Weekly(stored, "Talk · Example Community", "https://talk.example.org", link(t, got[0].Notice))
 	if got[0].Notice != want {
 		t.Fatalf("delivered\n%q\nwant\n%q", got[0].Notice.Body, want.Body)
 	}

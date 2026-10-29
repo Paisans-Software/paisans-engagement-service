@@ -2,9 +2,11 @@ package mail
 
 import (
 	"bytes"
+	"cmp"
 	"embed"
 	"fmt"
 	htmltemplate "html/template"
+	"strings"
 	texttemplate "text/template"
 	"time"
 
@@ -19,9 +21,9 @@ var (
 	textTmpl = texttemplate.Must(texttemplate.ParseFS(files, "templates/digest.txt"))
 )
 
-// Names are the community's two titles. Meta names the community in the
-// subject, heading and footer; Instance only in the button.
-type Names struct{ Instance, Meta string }
+// Names are the community's titles. Meta names the community in the
+// subject, the headings and the footer.
+type Names struct{ Meta string }
 
 // itemView is what the email shows of a thread: its title, link and
 // magazine. A microblog post has no title, so Post has the email quote its
@@ -37,12 +39,39 @@ type featuredView struct {
 }
 
 type view struct {
-	Meta, Instance, SiteURL, Unsubscribe, Dates string
-	Stats                                       digest.Stats
-	Featured                                    *featuredView
-	More                                        []itemView
-	Unanswered                                  []itemView
-	UnansweredHeading                           string
+	Meta, SiteURL, Unsubscribe, Dates string
+	Stats                             digest.Stats
+	Featured                          *featuredView
+	More                              []itemView
+	Unanswered                        []itemView
+	UnansweredHeading                 string
+	Discover                          []itemView
+	DiscoverHeading, DiscoverLine     string
+}
+
+// discoverNudge is the Discover line for a member who follows nothing.
+const discoverNudge = "You don't follow any magazines yet. Here's what's active."
+
+func discoverHeading(n Names) string { return "Elsewhere on " + n.Meta }
+
+// discoverLine names the magazines the member follows, the first few and
+// how many more, or nudges them to follow one.
+func discoverLine(following []digest.Magazine, more int) string {
+	if len(following) == 0 {
+		return discoverNudge
+	}
+	var names []string
+	for _, m := range following {
+		names = append(names, cmp.Or(m.Title, m.Name))
+	}
+	if more > 0 {
+		names = append(names, fmt.Sprintf("%d more", more))
+	}
+	list := names[0]
+	if n := len(names); n > 1 {
+		list = strings.Join(names[:n-1], ", ") + " and " + names[n-1]
+	}
+	return "You follow " + list + ". Other magazines are active too."
 }
 
 // Render builds the message for one member. from and to are the window; the
@@ -76,7 +105,7 @@ func RenderPage(d digest.Digest, n Names, siteURL string, from, to time.Time) (s
 
 func newView(d digest.Digest, n Names, siteURL, unsubscribeURL string, from, to time.Time) view {
 	v := view{
-		Meta: n.Meta, Instance: n.Instance, SiteURL: siteURL, Unsubscribe: unsubscribeURL,
+		Meta: n.Meta, SiteURL: siteURL, Unsubscribe: unsubscribeURL,
 		Dates: from.Format("Jan 2") + " – " + to.AddDate(0, 0, -1).Format("Jan 2"),
 		Stats: d.Stats, UnansweredHeading: d.UnansweredHeading,
 	}
@@ -88,6 +117,13 @@ func newView(d digest.Digest, n Names, siteURL, unsubscribeURL string, from, to 
 	}
 	for _, it := range d.Unanswered {
 		v.Unanswered = append(v.Unanswered, toView(it))
+	}
+	if len(d.Discover) > 0 {
+		v.DiscoverHeading = discoverHeading(n)
+		v.DiscoverLine = discoverLine(d.Following, d.FollowingMore)
+		for _, it := range d.Discover {
+			v.Discover = append(v.Discover, toView(it))
+		}
 	}
 	return v
 }

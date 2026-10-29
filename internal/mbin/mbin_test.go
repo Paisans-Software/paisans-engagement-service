@@ -762,6 +762,54 @@ func TestViewExpiredBanIgnored(t *testing.T) {
 	}
 }
 
+// Following is the followed magazines the member can open, by name: not
+// hidden, deleted, adult or banned to them, remote ones included.
+func TestViewFollowing(t *testing.T) {
+	f := newFixture(t)
+	f.user(t, 1, nil)
+	f.magazine(t, 10, row{"name": "zeta", "title": "Zeta"})
+	f.magazine(t, 11, row{"name": "alpha", "title": "Two\nLines"})
+	f.magazine(t, 12, row{"visibility": "trashed"})
+	f.magazine(t, 13, row{"is_adult": true})
+	f.magazine(t, 14, row{"marked_for_deletion_at": mid})
+	f.magazine(t, 15, row{"ap_deleted_at": mid})
+	f.magazine(t, 16, row{"name": "foo@remote.example.org", "title": "Foo", "ap_id": "https://remote.example.org/m/foo"})
+	f.magazine(t, 17, row{"name": "banned"})
+	f.magazine(t, 18, row{"name": "pardoned", "title": "Pardoned"})
+	f.exec(t, `INSERT INTO magazine_subscription SELECT 1, id FROM magazine`)
+	f.exec(t, `INSERT INTO magazine_ban VALUES (1, 17, NULL), (1, 18, $1)`, time.Now().Add(-time.Hour))
+
+	v, err := f.source(t).View(context.Background(), digest.Member{ID: 1}, from, to, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []digest.Magazine{
+		{ID: 11, Name: "alpha", Title: "Two Lines"},
+		{ID: 16, Name: "foo@remote.example.org", Title: "Foo"},
+		{ID: 18, Name: "pardoned", Title: "Pardoned"},
+		{ID: 10, Name: "zeta", Title: "Zeta"},
+	}
+	if !slices.Equal(v.Following, want) {
+		t.Fatalf("following %v", v.Following)
+	}
+	if len(v.Subscribed) != 9 {
+		t.Fatalf("subscribed %v", v.Subscribed)
+	}
+}
+
+func TestViewFollowingNone(t *testing.T) {
+	f := newFixture(t)
+	f.user(t, 1, nil)
+	f.magazine(t, 10, nil)
+	v, err := f.source(t).View(context.Background(), digest.Member{ID: 1}, from, to, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if v.Following != nil {
+		t.Fatalf("following %v", v.Following)
+	}
+}
+
 func TestStatsLocalOnly(t *testing.T) {
 	f := newFixture(t)
 	f.user(t, 1, nil)
