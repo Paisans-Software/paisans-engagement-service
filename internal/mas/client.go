@@ -454,3 +454,35 @@ func (c *Client) RegenerateSession(ctx context.Context, sessionID string) (strin
 	}
 	return "", statusErr("regenerate personal session", status)
 }
+
+// NewestUsers returns the n most recently created active users, oldest of
+// them first. MAS user ids are ULIDs, which order by creation, so the last
+// page of the list is the newest.
+//
+// Read from `crates/handlers/src/admin/v1/users/list.rs` at tag `v1.28.0`.
+func (c *Client) NewestUsers(ctx context.Context, n int) ([]User, error) {
+	q := url.Values{"page[last]": {strconv.Itoa(n)}, "filter[status]": {"active"}}
+	status, b, err := c.do(ctx, http.MethodGet, "/api/admin/v1/users", q, nil)
+	if err != nil {
+		return nil, err
+	}
+	if status != http.StatusOK {
+		return nil, statusErr("user list", status)
+	}
+	var out struct {
+		Data []resource `json:"data"`
+	}
+	if json.Unmarshal(b, &out) != nil {
+		return nil, errors.New("MAS user list: unreadable answer")
+	}
+	users := make([]User, 0, len(out.Data))
+	for _, d := range out.Data {
+		one, _ := json.Marshal(map[string]any{"data": d})
+		u, err := parseUser(one)
+		if err != nil {
+			return nil, err
+		}
+		users = append(users, u)
+	}
+	return users, nil
+}

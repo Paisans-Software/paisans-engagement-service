@@ -63,6 +63,62 @@ func (c *Client) CreateDirectRoom(ctx context.Context, bot, member string) (stri
 	return out.RoomID, nil
 }
 
+// CreateCommunityRoom creates the community room: anyone on the homeserver
+// may join, it is listed in the room directory under the alias
+// #aliasLocalpart:<server_name>, it does not federate, a member sees what was
+// said before they joined, and it is not encrypted. The creator holds power
+// level 100.
+func (c *Client) CreateCommunityRoom(ctx context.Context, name, aliasLocalpart string) (string, error) {
+	body := map[string]any{
+		"preset":           "public_chat",
+		"visibility":       "public",
+		"name":             name,
+		"room_alias_name":  aliasLocalpart,
+		"creation_content": map[string]any{"m.federate": false},
+		"initial_state": []any{map[string]any{
+			"type": "m.room.history_visibility", "state_key": "",
+			"content": map[string]any{"history_visibility": "shared"},
+		}},
+	}
+	var out struct {
+		RoomID string `json:"room_id"`
+	}
+	if err := c.do(ctx, "POST", "/_matrix/client/v3/createRoom", []*rate.Limiter{c.messages, c.rooms}, body, &out); err != nil {
+		return "", err
+	}
+	return out.RoomID, nil
+}
+
+// ResolveAlias returns the room an alias points to; false when there is none.
+func (c *Client) ResolveAlias(ctx context.Context, alias string) (string, bool, error) {
+	var out struct {
+		RoomID string `json:"room_id"`
+	}
+	err := c.doTpl(ctx, "GET", "/_matrix/client/v3/directory/room/{roomAlias}",
+		"/_matrix/client/v3/directory/room/"+segment(alias), nil, nil, &out)
+	if IsCode(err, "M_NOT_FOUND") {
+		return "", false, nil
+	}
+	if err != nil {
+		return "", false, err
+	}
+	return out.RoomID, true, nil
+}
+
+// Join joins a room by id or alias and returns its id. Joining a room the
+// account is already in succeeds.
+func (c *Client) Join(ctx context.Context, roomIDOrAlias string) (string, error) {
+	var out struct {
+		RoomID string `json:"room_id"`
+	}
+	err := c.doTpl(ctx, "POST", "/_matrix/client/v3/join/{roomIdOrAlias}",
+		"/_matrix/client/v3/join/"+segment(roomIDOrAlias), []*rate.Limiter{c.messages}, map[string]any{}, &out)
+	if err != nil {
+		return "", err
+	}
+	return out.RoomID, nil
+}
+
 // stateEvent reads one state event's content into out; false means the room has none.
 func (c *Client) stateEvent(ctx context.Context, roomID, evType, key string, out any) (bool, error) {
 	const tpl = "/_matrix/client/v3/rooms/{roomId}/state/{eventType}/{stateKey}"

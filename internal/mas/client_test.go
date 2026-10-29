@@ -297,3 +297,25 @@ func TestTokenWithoutLifetimeCached(t *testing.T) {
 		t.Fatalf("TokenRequests = %d, want 1", n)
 	}
 }
+
+func TestNewestUsers(t *testing.T) {
+	c, s := newClient(t)
+	t0 := time.Date(2026, 10, 29, 9, 0, 0, 0, time.UTC)
+	a := s.AddUser("alice", t0)
+	gone := s.AddUser("gone", t0.Add(time.Minute))
+	s.Deactivate(gone)
+	b := s.AddUser("bob", t0.Add(2*time.Minute))
+	c2 := s.AddUser("carol", t0.Add(3*time.Minute))
+	got, err := c.NewestUsers(context.Background(), 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 2 || got[0].ID != b || got[1].ID != c2 || got[1].Username != "carol" {
+		t.Fatalf("newest = %+v, want bob and carol", got)
+	}
+	q, _ := url.ParseQuery(s.LastQuery())
+	if q.Get("page[last]") != "2" || q.Get("filter[status]") != "active" {
+		t.Fatalf("query = %v", q)
+	}
+	_ = a
+}

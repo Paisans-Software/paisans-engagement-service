@@ -10,6 +10,8 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -290,6 +292,9 @@ func (s *Server) handleAdmin(w http.ResponseWriter, r *http.Request) {
 		s.getUser(w, func(u mas.User) bool { return u.Username == name })
 	case path == "users" && r.Method == http.MethodPost:
 		s.createUser(w, r)
+	case path == "users" && r.Method == http.MethodGet:
+		s.lastQuery = r.URL.RawQuery
+		s.listUsers(w, r.URL.Query())
 	case strings.HasPrefix(path, "users/") && r.Method == http.MethodGet:
 		id, _ := url.PathUnescape(strings.TrimPrefix(path, "users/"))
 		s.getUser(w, func(u mas.User) bool { return u.ID == id })
@@ -323,6 +328,27 @@ func (s *Server) knownProvider(p string) bool {
 		}
 	}
 	return false
+}
+
+// listUsers answers the user list in id order, with filter[status]=active
+// leaving out locked and deactivated users and page[last] keeping the last n.
+func (s *Server) listUsers(w http.ResponseWriter, q url.Values) {
+	var us []mas.User
+	for _, u := range s.users {
+		if q.Get("filter[status]") == "active" && (u.Locked || u.Deactivated) {
+			continue
+		}
+		us = append(us, u)
+	}
+	sort.Slice(us, func(i, j int) bool { return us[i].ID < us[j].ID })
+	if n, err := strconv.Atoi(q.Get("page[last]")); err == nil && n < len(us) {
+		us = us[len(us)-n:]
+	}
+	data := []map[string]any{}
+	for _, u := range us {
+		data = append(data, userResource(u))
+	}
+	writeJSON(w, 200, map[string]any{"data": data})
 }
 
 func (s *Server) listLinks(w http.ResponseWriter, q url.Values) {
