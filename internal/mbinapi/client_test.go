@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"strings"
 	"sync"
 	"testing"
 )
@@ -143,7 +144,7 @@ func TestRequests(t *testing.T) {
 		{"GET", "/api/magazine/name/welcome", nil},
 		{"POST", "/api/agent/magazines", map[string]any{"name": "welcome", "title": "Welcome", "description": "Say hello",
 			"isAdult": false, "isPostingRestrictedToMods": true}},
-		{"PUT", "/api/moderate/magazine/3", map[string]any{"isPostingRestrictedToMods": true, "isAdult": false}},
+		{"PUT", "/api/moderate/magazine/3", map[string]any{"isPostingRestrictedToMods": true}},
 		{"POST", "/api/magazine/3/article", map[string]any{"title": "Welcome @alice", "body": "Say hello to @alice",
 			"lang": "en", "isAdult": false, "isOc": false}},
 		{"PUT", "/api/agent/users/7/magazines/3/subscription", nil},
@@ -176,5 +177,22 @@ func TestErrors(t *testing.T) {
 	f.Close()
 	if err := New(f.URL, "", "id", "s", nil).Subscribe(context.Background(), 1, 2); !errors.Is(err, ErrUnavailable) {
 		t.Fatalf("down: %v", err)
+	}
+}
+
+func TestRefusalCarriesMbinsReason(t *testing.T) {
+	f := newFake(t, func(call) (int, any) {
+		return 400, map[string]any{"type": "x", "title": "Bad Request", "detail": "Title is too\nlong"}
+	})
+	_, err := New(f.URL, "", "id", "s", nil).CreateThread(context.Background(), 3, "t", "b")
+	if !errors.Is(err, ErrRefused) || !strings.Contains(err.Error(), "Title is too long") {
+		t.Fatalf("err = %v", err)
+	}
+}
+
+func TestSubscribeNotFoundIsRefused(t *testing.T) {
+	f := newFake(t, func(call) (int, any) { return 404, nil })
+	if err := New(f.URL, "", "id", "s", nil).Subscribe(context.Background(), 1, 2); !errors.Is(err, ErrRefused) {
+		t.Fatalf("err = %v, want a refusal", err)
 	}
 }

@@ -7,6 +7,7 @@ package mbinapi
 
 import (
 	"bytes"
+	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
@@ -135,8 +136,30 @@ func (c *Client) drop(stale string) {
 	}
 }
 
-// errNotFound is a 404, which only MagazineByName turns into an answer.
+// errNotFound is a 404: a refusal, which MagazineByName turns into an
+// answer.
 var errNotFound = errors.New("mbin: not found")
+
+// maxReason bounds the reason a refusal quotes, in characters.
+const maxReason = 200
+
+// reason is Mbin's own explanation from a refusal's body, on one line: the
+// problem's detail, else its title. It never holds a credential, since the
+// request carried none in its body.
+func reason(b []byte) string {
+	var p struct{ Detail, Title, Message string }
+	if json.Unmarshal(b, &p) != nil {
+		return "no reason given"
+	}
+	r := strings.Join(strings.Fields(cmp.Or(p.Detail, p.Message, p.Title)), " ")
+	if r == "" {
+		return "no reason given"
+	}
+	if rs := []rune(r); len(rs) > maxReason {
+		r = string(rs[:maxReason]) + "…"
+	}
+	return r
+}
 
 // do calls the API. A 401 drops the token and tries once more. what names
 // the call in errors, in place of a path that may hold ids.
@@ -175,11 +198,13 @@ func (c *Client) do(ctx context.Context, method, path, what string, body, out an
 			c.drop(tok)
 			continue
 		case status == http.StatusUnauthorized || status == http.StatusForbidden:
-			return fmt.Errorf("%w: %s answered %d", ErrForbidden, what, status)
+			return fmt.Errorf("%w: %s answered %d: %s", ErrForbidden, what, status, reason(b))
 		case status == http.StatusNotFound:
-			return fmt.Errorf("%w: %s", errNotFound, what)
+			// The target is gone, or the agent may not see it, such as a
+			// private magazine.
+			return fmt.Errorf("%w: %w: %s answered 404", ErrRefused, errNotFound, what)
 		case status == http.StatusBadRequest || status == http.StatusUnprocessableEntity:
-			return fmt.Errorf("%w: %s answered %d", ErrRefused, what, status)
+			return fmt.Errorf("%w: %s answered %d: %s", ErrRefused, what, status, reason(b))
 		case status >= 500:
 			return fmt.Errorf("%w: %s answered %d", ErrUnavailable, what, status)
 		case status >= 300:
@@ -230,11 +255,12 @@ func (c *Client) CreateMagazine(ctx context.Context, name, title, description st
 }
 
 // RestrictPosting restricts the magazine's new threads to its moderators.
-// isAdult is sent as false because Mbin's update reads a missing isAdult as
-// null.
+// Mbin lets only the magazine's owner update it, and answers anyone else
+// 403. Every update must carry isPostingRestrictedToMods, since one without
+// it turns the restriction off.
 func (c *Client) RestrictPosting(ctx context.Context, magazineID int64) error {
 	return c.do(ctx, http.MethodPut, "/api/moderate/magazine/"+strconv.FormatInt(magazineID, 10), "update magazine",
-		map[string]any{"isPostingRestrictedToMods": true, "isAdult": false}, nil)
+		map[string]any{"isPostingRestrictedToMods": true}, nil)
 }
 
 // CreateThread posts a text thread in the magazine as the agent.
