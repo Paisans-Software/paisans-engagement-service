@@ -2,7 +2,6 @@ package store
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"strconv"
 	"time"
@@ -92,14 +91,29 @@ func (s *Store) welcomedRows(ctx context.Context, sql string, args ...any) ([]We
 	})
 }
 
-// PendingSubscriptions is every Mbin newcomer welcomed and not yet
-// subscribed to the magazine.
+// PendingSubscriptions is every Mbin newcomer whose thread is posted and
+// whose subscription to the magazine is not settled.
 func (s *Store) PendingSubscriptions(ctx context.Context) ([]Welcomed, error) {
 	return s.welcomedRows(ctx, `SELECT `+welcomedColumns+` FROM welcomed
-		WHERE platform='mbin' AND NOT subscribed ORDER BY at, account`)
+		WHERE platform='mbin' AND entry_id IS NOT NULL AND NOT subscribed ORDER BY at, account`)
 }
 
-// WelcomeSubscribed records that the Mbin newcomer is subscribed.
+// PendingWelcomes is the Mbin newcomers recorded for a thread that is not
+// known to be posted: the batch to finish before any other.
+func (s *Store) PendingWelcomes(ctx context.Context) ([]Welcomed, error) {
+	return s.welcomedRows(ctx, `SELECT `+welcomedColumns+` FROM welcomed
+		WHERE platform='mbin' AND entry_id IS NULL ORDER BY mbin_id`)
+}
+
+// SetWelcomeEntry records the thread that welcomed the Mbin accounts.
+func (s *Store) SetWelcomeEntry(ctx context.Context, accounts []string, entryID int64, url string) error {
+	_, err := s.pool.Exec(ctx,
+		`UPDATE welcomed SET entry_id=$2, url=$3 WHERE platform='mbin' AND account = ANY($1)`, accounts, entryID, url)
+	return err
+}
+
+// WelcomeSubscribed records that the Mbin newcomer's subscription is
+// settled: subscribed, or one Mbin refuses for good.
 func (s *Store) WelcomeSubscribed(ctx context.Context, account string) error {
 	_, err := s.pool.Exec(ctx, `UPDATE welcomed SET subscribed=true WHERE platform='mbin' AND account=$1`, account)
 	return err
@@ -108,9 +122,16 @@ func (s *Store) WelcomeSubscribed(ctx context.Context, account string) error {
 // ClaimWelcomesForDay gives the day's welcome email its newcomers: every Mbin
 // newcomer with a thread that no email has named yet becomes the day's, and
 // the day's are returned. Asking again the same day returns the same ones,
-// plus none recorded since: those wait for the next day.
+// plus none recorded since: those wait for the next day. An earlier day
+// whose email reached nobody, because it was never sent or every send
+// failed, gives its newcomers back first, so they roll into this one.
 func (s *Store) ClaimWelcomesForDay(ctx context.Context, day time.Time) ([]Welcomed, error) {
 	d := weekDate(day)
+	if _, err := s.pool.Exec(ctx,
+		`UPDATE welcomed w SET day=NULL WHERE w.platform='mbin' AND w.day < $1::date
+		AND NOT EXISTS (SELECT 1 FROM welcome_sends s WHERE s.day=w.day AND s.status='sent')`, d); err != nil {
+		return nil, err
+	}
 	if _, err := s.pool.Exec(ctx,
 		`UPDATE welcomed SET day=$1::date WHERE platform='mbin' AND day IS NULL AND entry_id IS NOT NULL
 		AND NOT EXISTS (SELECT 1 FROM welcomed w WHERE w.platform='mbin' AND w.day=$1::date)`, d); err != nil {
@@ -187,26 +208,30 @@ func (s *Store) WelcomeUnsubscribed(ctx context.Context) (map[string]bool, error
 	return got, err
 }
 
-// AlertDue reports whether an alert of the kind may go out now, and records
-// it if so: at most one per kind per calendar day of now.
-func (s *Store) AlertDue(ctx context.Context, kind string, now time.Time) (bool, error) {
-	var k string
+// AlertSentToday reports whether an alert of the kind already went out on
+// the calendar day of now.
+func (s *Store) AlertSentToday(ctx context.Context, kind string, now time.Time) (bool, error) {
+	var sent bool
 	err := s.pool.QueryRow(ctx,
+		`SELECT EXISTS (SELECT 1 FROM welcome_alerts WHERE kind=$1 AND day=$2::date)`, kind, weekDate(now)).Scan(&sent)
+	return sent, err
+}
+
+// RecordAlert records that an alert of the kind reached someone at now.
+func (s *Store) RecordAlert(ctx context.Context, kind string, now time.Time) error {
+	_, err := s.pool.Exec(ctx,
 		`INSERT INTO welcome_alerts (kind, day, at) VALUES ($1, $2::date, $3)
-		ON CONFLICT (kind) DO UPDATE SET day=$2::date, at=$3 WHERE welcome_alerts.day < $2::date
-		RETURNING kind`, kind, weekDate(now), now).Scan(&k)
-	if errors.Is(err, pgx.ErrNoRows) {
-		return false, nil
-	}
-	return err == nil, err
+		ON CONFLICT (kind) DO UPDATE SET day=$2::date, at=$3`, kind, weekDate(now), now)
+	return err
 }
 
 // PruneWelcome deletes the welcome records older than WelcomeKeep. The starts
-// and the unsubscribes stay.
+// and the unsubscribes stay, and so does an Mbin newcomer whose subscription
+// is not settled yet, so they are neither welcomed again nor forgotten.
 func (s *Store) PruneWelcome(ctx context.Context, now time.Time) error {
 	cut := now.Add(-WelcomeKeep)
 	for _, q := range []string{
-		`DELETE FROM welcomed WHERE at < $1`,
+		`DELETE FROM welcomed WHERE at < $1 AND (platform <> 'mbin' OR subscribed)`,
 		`DELETE FROM welcome_sends WHERE at < $1`,
 		`DELETE FROM welcome_alerts WHERE at < $1`,
 	} {

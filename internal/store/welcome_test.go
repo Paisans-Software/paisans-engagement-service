@@ -51,6 +51,12 @@ func TestClaimWelcomesForDayIsStable(t *testing.T) {
 	if err != nil || len(b) != 2 {
 		t.Fatalf("second claim = %v, %v; want the same two", b, err)
 	}
+	if ok, _ := s.ClaimWelcomeSend(ctx, "m", day); !ok {
+		t.Fatal("claim")
+	}
+	if err := s.FinishWelcomeSend(ctx, "m", day, store.StatusSent); err != nil {
+		t.Fatal(err)
+	}
 	c, err := s.ClaimWelcomesForDay(ctx, day.AddDate(0, 0, 1))
 	if err != nil || len(c) != 1 || c[0].MbinID != 3 {
 		t.Fatalf("next day = %v, %v; want the one recorded later", c, err)
@@ -99,18 +105,76 @@ func TestWelcomeSendClaimOnce(t *testing.T) {
 	}
 }
 
-func TestAlertDueOncePerDay(t *testing.T) {
+func TestAlertOncePerDayOnlyWhenRecorded(t *testing.T) {
 	s, ctx := storetest.New(t), context.Background()
-	for i, want := range []bool{true, false} {
-		if got, err := s.AlertDue(ctx, "matrix-post", wnow.Add(time.Duration(i)*time.Hour)); err != nil || got != want {
-			t.Fatalf("call %d = %v, %v", i, got, err)
-		}
+	if sent, err := s.AlertSentToday(ctx, "matrix-post", wnow); err != nil || sent {
+		t.Fatalf("before any alert = %v, %v", sent, err)
 	}
-	if got, _ := s.AlertDue(ctx, "mbin-post", wnow); !got {
-		t.Fatal("another kind was not due")
+	// Nothing delivered, nothing recorded: the slot is still free.
+	if sent, _ := s.AlertSentToday(ctx, "matrix-post", wnow.Add(time.Hour)); sent {
+		t.Fatal("an alert that was never recorded used up the day")
 	}
-	if got, _ := s.AlertDue(ctx, "matrix-post", wnow.AddDate(0, 0, 1)); !got {
-		t.Fatal("the next day was not due")
+	if err := s.RecordAlert(ctx, "matrix-post", wnow); err != nil {
+		t.Fatal(err)
+	}
+	if sent, _ := s.AlertSentToday(ctx, "matrix-post", wnow.Add(time.Hour)); !sent {
+		t.Fatal("a recorded alert did not hold the day")
+	}
+	if sent, _ := s.AlertSentToday(ctx, "mbin-post", wnow); sent {
+		t.Fatal("another kind was held")
+	}
+	if sent, _ := s.AlertSentToday(ctx, "matrix-post", wnow.AddDate(0, 0, 1)); sent {
+		t.Fatal("the next day was held")
+	}
+}
+
+func TestPendingWelcomeGetsItsEntry(t *testing.T) {
+	s, ctx := storetest.New(t), context.Background()
+	p := mbinWelcomed(1, wnow)
+	p.EntryID, p.URL = 0, ""
+	if err := s.RecordWelcomed(ctx, []store.Welcomed{p, mbinWelcomed(2, wnow)}); err != nil {
+		t.Fatal(err)
+	}
+	got, err := s.PendingWelcomes(ctx)
+	if err != nil || len(got) != 1 || got[0].MbinID != 1 {
+		t.Fatalf("pending = %+v, %v", got, err)
+	}
+	if subs, _ := s.PendingSubscriptions(ctx); len(subs) != 1 || subs[0].MbinID != 2 {
+		t.Fatalf("a newcomer without a thread is due a subscription: %+v", subs)
+	}
+	if c, _ := s.ClaimWelcomesForDay(ctx, wnow); len(c) != 1 {
+		t.Fatalf("a newcomer without a thread was claimed for the email: %+v", c)
+	}
+	if err := s.SetWelcomeEntry(ctx, []string{"1"}, 77, "https://forum.example.org/m/welcome/t/77/-"); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := s.PendingWelcomes(ctx); len(got) != 0 {
+		t.Fatalf("still pending: %+v", got)
+	}
+}
+
+// A day whose email reached nobody hands its newcomers on to the next day;
+// one that reached someone keeps them.
+func TestClaimRollsOverAnUnsentDay(t *testing.T) {
+	s, ctx := storetest.New(t), context.Background()
+	if err := s.RecordWelcomed(ctx, []store.Welcomed{mbinWelcomed(1, wnow)}); err != nil {
+		t.Fatal(err)
+	}
+	if c, _ := s.ClaimWelcomesForDay(ctx, wnow); len(c) != 1 {
+		t.Fatal("not claimed")
+	}
+	next := wnow.AddDate(0, 0, 1)
+	if c, err := s.ClaimWelcomesForDay(ctx, next); err != nil || len(c) != 1 {
+		t.Fatalf("next day after an unsent day = %+v, %v; want the newcomer again", c, err)
+	}
+	if ok, _ := s.ClaimWelcomeSend(ctx, "m", next); !ok {
+		t.Fatal("claim")
+	}
+	if err := s.FinishWelcomeSend(ctx, "m", next, store.StatusSent); err != nil {
+		t.Fatal(err)
+	}
+	if c, _ := s.ClaimWelcomesForDay(ctx, next.AddDate(0, 0, 1)); len(c) != 0 {
+		t.Fatalf("a newcomer already mailed came back: %+v", c)
 	}
 }
 
@@ -126,15 +190,22 @@ func TestPruneWelcomeKeepsStartsAndUnsubscribes(t *testing.T) {
 	if err := s.RecordWelcomed(ctx, []store.Welcomed{mbinWelcomed(1, old), mbinWelcomed(2, wnow)}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.AlertDue(ctx, "k", old); err != nil {
+	if err := s.RecordAlert(ctx, "k", old); err != nil {
+		t.Fatal(err)
+	}
+	unsubscribed := mbinWelcomed(3, old)
+	if err := s.RecordWelcomed(ctx, []store.Welcomed{unsubscribed}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.WelcomeSubscribed(ctx, "1"); err != nil {
 		t.Fatal(err)
 	}
 	if err := s.PruneWelcome(ctx, wnow); err != nil {
 		t.Fatal(err)
 	}
 	acc, _ := s.WelcomedAccounts(ctx, store.PlatformMbin)
-	if len(acc) != 1 || !acc["2"] {
-		t.Fatalf("accounts after prune = %v", acc)
+	if len(acc) != 2 || !acc["2"] || !acc["3"] {
+		t.Fatalf("accounts after prune = %v; want 2, and 3 kept until subscribed", acc)
 	}
 	if st, _ := s.WelcomeStart(ctx, store.PlatformMbin, wnow); !st.Equal(old) {
 		t.Fatalf("start after prune = %v", st)
@@ -142,7 +213,7 @@ func TestPruneWelcomeKeepsStartsAndUnsubscribes(t *testing.T) {
 	if u, _ := s.WelcomeUnsubscribed(ctx); !u["gone"] {
 		t.Fatal("unsubscribe pruned")
 	}
-	if due, _ := s.AlertDue(ctx, "k", old); !due {
+	if sent, _ := s.AlertSentToday(ctx, "k", old); sent {
 		t.Fatal("the pruned alert still holds its day")
 	}
 }
