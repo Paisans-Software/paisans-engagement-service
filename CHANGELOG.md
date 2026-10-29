@@ -23,6 +23,7 @@ All notable changes to this project are documented here, in the
 - The digest email's HTML has a head with a title.
 - Every thread in the digest shows only its title and magazine, with no counts, featured label or microblog label. A microblog post is quoted instead of titled.
 - The digest email's subject and heading read "This week on" the community rather than "Your week on".
+- A microblog post or quoted comment shows its text without its links and ends with an ellipsis where a link was dropped, in the email and the Matrix message; a post that is only a link is named by the link's site.
 
 ## [0.1.1] - 2026-10-27
 

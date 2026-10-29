@@ -514,6 +514,30 @@ func TestHotTitleIsOneLine(t *testing.T) {
 	}
 }
 
+// A microblog post stands in for its title without its links, and one that
+// is nothing but a link is named by the link's host.
+func TestHotPostTitleDropsLinks(t *testing.T) {
+	f := newFixture(t)
+	f.user(t, 1, nil)
+	f.magazine(t, 10, nil)
+	f.post(t, 1, 1, 10, row{"body": "Hi, this is a post. !(https://www.reddit.com/r/startrekmemes/comments/14glor3/)"})
+	f.post(t, 2, 1, 10, row{"body": "https://www.reddit.com/r/startrekmemes/comments/14glor3/"})
+
+	got, err := f.source(t).Hot(context.Background(), from, to)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := map[digest.Key]string{postKey(1): "Hi, this is a post…", postKey(2): "reddit.com…"}
+	if len(got) != len(want) {
+		t.Fatalf("got %+v", got)
+	}
+	for _, g := range got {
+		if g.Title != want[g.Key] {
+			t.Errorf("%v: got %q want %q", g.Key, g.Title, want[g.Key])
+		}
+	}
+}
+
 func TestHotURLs(t *testing.T) {
 	f := newFixture(t)
 	f.user(t, 1, nil)

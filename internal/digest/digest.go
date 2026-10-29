@@ -6,6 +6,7 @@ package digest
 import (
 	"cmp"
 	"math/rand/v2"
+	"net/url"
 	"regexp"
 	"slices"
 	"sort"
@@ -268,7 +269,17 @@ func excerpt(it Item, v View) string {
 // A link's target may hold one level of parentheses, as Wikipedia's do.
 const target = `\((?:[^()]|\([^()]*\))*\)`
 
+// A bare URL runs to the next space or bracket and may hold one level of
+// parentheses, as Wikipedia's do. Any space before it goes with it, so the
+// text around it closes up.
+const bareURL = `\s*https?://(?:[^\s<>()\[\]]|\([^\s<>()]*\))+`
+
 var (
+	reURL = regexp.MustCompile(bareURL)
+	// reGone is where a URL was, marked by Plain with a NUL, which no Mbin
+	// body holds since Postgres text cannot, with the wrapper it may have
+	// had: !(url), (url) or <url>.
+	reGone  = regexp.MustCompile(`\s*(?:!?\(\s*\x00\s*\)|<\s*\x00\s*>|\x00)`)
 	reImage = regexp.MustCompile(`!\[([^\]]*)\]` + target)
 	reLink  = regexp.MustCompile(`\[([^\]]*)\]` + target)
 	reLead  = regexp.MustCompile(`(?m)^\s*(#{1,6}\s+|>+\s?)`)
@@ -289,13 +300,25 @@ var (
 )
 
 // Plain reduces markdown to one line of plain text of at most max runes. It
-// keeps link text, drops paired emphasis marks, collapses whitespace and,
-// when it must cut, cuts at a word boundary and ends with an ellipsis that
-// counts toward max.
+// keeps link text, drops URLs and paired emphasis marks, collapses whitespace
+// and, when it must cut, cuts at a word boundary. Text that was cut or lost a
+// URL ends with an ellipsis that counts toward max, so a reader can tell
+// there is more. A body that is nothing but URLs comes out empty.
 func Plain(body string, max int) string {
+	dropped := false
+	keep := func(sub []string) string {
+		if strings.TrimSpace(sub[1]) == "" {
+			dropped = true
+		}
+		return sub[1]
+	}
 	s := reLead.ReplaceAllString(body, "")
-	s = reImage.ReplaceAllString(s, "$1")
-	s = reLink.ReplaceAllString(s, "$1")
+	s = replaceSub(reImage, s, keep)
+	s = replaceSub(reLink, s, keep)
+	if t := reURL.ReplaceAllStringFunc(s, func(m string) string { return "\x00" + trailing(m) }); t != s {
+		dropped = true
+		s = reGone.ReplaceAllString(t, "")
+	}
 	for _, re := range reMarks {
 		s = re.ReplaceAllString(s, "$1")
 	}
@@ -309,11 +332,14 @@ func Plain(body string, max int) string {
 	s = strings.Join(strings.FieldsFunc(s, unicode.IsSpace), " ")
 
 	r := []rune(s)
-	if len(r) <= max {
+	if len(r) == 0 || max < 1 {
+		return ""
+	}
+	if len(r) <= max && !dropped {
 		return s
 	}
-	if max < 1 {
-		return ""
+	if len(r) < max {
+		return ellipsis(s)
 	}
 	cut := r[:max-1]
 	// Back up to the last space unless the cut already ends on a word.
@@ -322,7 +348,42 @@ func Plain(body string, max int) string {
 			cut = cut[:i]
 		}
 	}
-	return strings.TrimRightFunc(string(cut), unicode.IsSpace) + "…"
+	return ellipsis(string(cut))
+}
+
+// ellipsis ends s with one, in place of any space or stop it ended with.
+func ellipsis(s string) string {
+	return strings.TrimRightFunc(s, func(r rune) bool {
+		return unicode.IsSpace(r) || strings.ContainsRune(".,;:", r)
+	}) + "…"
+}
+
+// replaceSub is ReplaceAllStringFunc given each match's submatches.
+func replaceSub(re *regexp.Regexp, s string, f func([]string) string) string {
+	return re.ReplaceAllStringFunc(s, func(m string) string {
+		return f(re.FindStringSubmatch(m))
+	})
+}
+
+// trailing is the punctuation a URL match ended with, which belongs to the
+// sentence rather than the URL.
+func trailing(m string) string {
+	return m[len(strings.TrimRight(m, `.,;:!?'"`)):]
+}
+
+// Host is the host of the first URL in body, without a leading "www." or a
+// port, or empty when body has none.
+func Host(body string) string {
+	m := strings.TrimSpace(reURL.FindString(body))
+	m = m[:len(m)-len(trailing(m))]
+	if m == "" {
+		return ""
+	}
+	u, err := url.Parse(m)
+	if err != nil {
+		return ""
+	}
+	return strings.TrimPrefix(strings.ToLower(u.Hostname()), "www.")
 }
 
 func lastSpace(r []rune) int {
