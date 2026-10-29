@@ -2,6 +2,8 @@ package digest
 
 import (
 	"fmt"
+	"math/rand/v2"
+	"slices"
 	"strings"
 	"testing"
 	"unicode/utf8"
@@ -256,6 +258,16 @@ func TestPlain(t *testing.T) {
 		{"nested emphasis", "**bold *and em***"},
 		{"adjacent underscore pairs", "_a_ _b_ and __c__ __d__"},
 		{"adjacent asterisk pairs", "*a* *b* and **c** **d** and ~~e~~ ~~f~~"},
+		{"bare url at the end", "Hi, this is a post. I wonder how it differs from a thread. https://www.reddit.com/r/startrekmemes/comments/14glor3/were_a_strange_bunch_i_love_it/"},
+		{"url in parentheses after a bang", "Hi, this is a post. I wonder how it differs from a thread. !(https://www.reddit.com/r/startrekmemes/comments/14glor3/were_a_strange_bunch_i_love_it/)"},
+		{"bare url mid text", "see https://example.org/a, then go"},
+		{"bare url with parentheses", "read https://en.wikipedia.org/wiki/Go_(language) first"},
+		{"autolink", "docs at <https://example.org> today"},
+		{"link whose text is its url", "[https://example.org](https://example.org) is good"},
+		{"link with no text", "look [](https://example.org)"},
+		{"image with no alt", "look ![](https://example.org/i.png)"},
+		{"only a url", "https://example.org"},
+		{"parentheses beside a url", "call f() at https://example.org"},
 	}
 	want := []string{
 		"see the docs now",
@@ -275,6 +287,16 @@ func TestPlain(t *testing.T) {
 		"bold and em",
 		"a b and c d",
 		"a b and c d and e f",
+		"Hi, this is a post. I wonder how it differs from a thread…",
+		"Hi, this is a post. I wonder how it differs from a thread…",
+		"see, then go…",
+		"read first…",
+		"docs at today…",
+		"is good…",
+		"look…",
+		"look…",
+		"",
+		"call f() at…",
 	}
 	for i, c := range cases {
 		if got := Plain(c.in, 200); got != want[i] {
@@ -293,6 +315,9 @@ func TestPlain(t *testing.T) {
 	}
 	if got := Plain("supercalifragilistic", 8); got != "superca…" {
 		t.Fatalf("got %q", got)
+	}
+	if got := Plain("one two. three", 10); got != "one two…" {
+		t.Fatalf("cut after a full stop: got %q", got)
 	}
 	if got := Plain("exactly ten", 11); got != "exactly ten" {
 		t.Fatalf("got %q", got)
@@ -348,5 +373,289 @@ func TestShownExcerptIsThisWeek(t *testing.T) {
 	d, _ = Build([]Item{it}, v, Stats{})
 	if d.Featured.Excerpt != "this week" {
 		t.Fatalf("excerpt %q", d.Featured.Excerpt)
+	}
+}
+
+func seeded(seed uint64) *rand.Rand { return rand.New(rand.NewPCG(seed, seed)) }
+
+// fresh is a new thread nobody has answered.
+func fresh(id int64, mag int64) Item { return entry(id, mag, 0, 0, 0) }
+
+// Three of the week's unanswered threads are picked, at random but the same
+// for the same seed whatever order they came in.
+func TestUnansweredPicksThree(t *testing.T) {
+	var in []Item
+	for i := int64(1); i <= 6; i++ {
+		in = append(in, fresh(i, 1))
+	}
+	d := Digest{}
+	d.AddUnanswered(in, View{}, seeded(1))
+	got := keys(d.Unanswered)
+	if len(got) != 3 {
+		t.Fatalf("got %v", got)
+	}
+	seen := map[int64]bool{}
+	for _, id := range got {
+		if id < 1 || id > 6 || seen[id] {
+			t.Fatalf("got %v", got)
+		}
+		seen[id] = true
+	}
+	rev := slices.Clone(in)
+	slices.Reverse(rev)
+	again := Digest{}
+	again.AddUnanswered(rev, View{}, seeded(1))
+	if !eq(keys(again.Unanswered), got) {
+		t.Fatalf("same seed gave %v then %v", got, keys(again.Unanswered))
+	}
+}
+
+// Over enough seeds every candidate gets its turn, so the pick is not just
+// the first three.
+func TestUnansweredIsRandom(t *testing.T) {
+	var in []Item
+	for i := int64(1); i <= 6; i++ {
+		in = append(in, fresh(i, 1))
+	}
+	picked := map[int64]bool{}
+	for seed := uint64(0); seed < 50; seed++ {
+		d := Digest{}
+		d.AddUnanswered(in, View{}, seeded(seed))
+		for _, id := range keys(d.Unanswered) {
+			picked[id] = true
+		}
+	}
+	if len(picked) != 6 {
+		t.Fatalf("picked only %v", picked)
+	}
+}
+
+func TestUnansweredFewerThanThree(t *testing.T) {
+	d := Digest{}
+	d.AddUnanswered([]Item{fresh(1, 1), fresh(2, 1)}, View{}, seeded(1))
+	if got := keys(d.Unanswered); len(got) != 2 {
+		t.Fatalf("got %v", got)
+	}
+	d = Digest{}
+	d.AddUnanswered(nil, View{}, seeded(1))
+	if d.Unanswered != nil {
+		t.Fatalf("got %v", keys(d.Unanswered))
+	}
+}
+
+// The member's own and joined threads, what they blocked or are banned
+// from, anything federated or shown before, and anything the digest already
+// shows are never picked.
+func TestUnansweredExcludes(t *testing.T) {
+	own := fresh(1, 1)
+	blockedAuthor := fresh(4, 1)
+	far := fresh(5, 7)
+	far.Federated = true
+	post := fresh(8, 1)
+	post.Key.Kind = KindPost
+	in := []Item{own, fresh(2, 2), fresh(3, 3), blockedAuthor, far, fresh(6, 1), fresh(7, 1), fresh(8, 1), post, fresh(9, 1)}
+	v := View{
+		Joined:           map[Key]bool{{KindEntry, 1}: true},
+		BlockedMagazines: map[int64]bool{2: true},
+		BannedMagazines:  map[int64]bool{3: true},
+		BlockedUsers:     map[int64]bool{1004: true},
+		Subscribed:       map[int64]bool{7: true},
+		Shown:            map[Key]bool{{KindEntry, 6}: true},
+	}
+	d := Digest{Featured: &Featured{Item: fresh(7, 1)}, More: []Item{fresh(8, 1)}}
+	for seed := uint64(0); seed < 20; seed++ {
+		d.Unanswered = nil
+		d.AddUnanswered(in, v, seeded(seed))
+		got := d.Unanswered
+		if len(got) != 2 {
+			t.Fatalf("seed %d: got %v", seed, keys(got))
+		}
+		for _, it := range got {
+			if it.Key != post.Key && it.Key != (Key{KindEntry, 9}) {
+				t.Fatalf("seed %d: picked %+v", seed, it.Key)
+			}
+		}
+	}
+}
+
+// The section's heading is one of three, picked by the same source as the
+// threads, and none when there is no section.
+func TestUnansweredHeading(t *testing.T) {
+	headings := map[string]bool{}
+	for seed := uint64(0); seed < 50; seed++ {
+		d := Digest{}
+		d.AddUnanswered([]Item{fresh(1, 1)}, View{}, seeded(seed))
+		again := Digest{}
+		again.AddUnanswered([]Item{fresh(1, 1)}, View{}, seeded(seed))
+		if d.UnansweredHeading != again.UnansweredHeading {
+			t.Fatalf("seed %d gave %q then %q", seed, d.UnansweredHeading, again.UnansweredHeading)
+		}
+		headings[d.UnansweredHeading] = true
+	}
+	want := map[string]bool{"New posts": true, "No replies yet": true, "Start the conversation": true}
+	if len(headings) != len(want) {
+		t.Fatalf("headings %v", headings)
+	}
+	for h := range headings {
+		if !want[h] {
+			t.Fatalf("heading %q", h)
+		}
+	}
+	d := Digest{}
+	d.AddUnanswered(nil, View{}, seeded(1))
+	if d.UnansweredHeading != "" {
+		t.Fatalf("heading %q with no section", d.UnansweredHeading)
+	}
+}
+
+func TestHost(t *testing.T) {
+	cases := map[string]string{
+		"https://www.reddit.com/r/startrekmemes/comments/14glor3/": "reddit.com",
+		"see !(http://Example.org:8080/a) and https://other.net":   "example.org",
+		"![](https://media.example.org/i.png)":                     "media.example.org",
+		"no links here":                                            "",
+	}
+	for in, want := range cases {
+		if got := Host(in); got != want {
+			t.Errorf("Host(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
+// discover builds the member's digest from items and adds Discover to it.
+func discover(t *testing.T, items []Item, v View) Digest {
+	t.Helper()
+	d, ok := Build(items, v, Stats{})
+	if !ok {
+		t.Fatal("Build found nothing")
+	}
+	d.AddDiscover(items, v)
+	return d
+}
+
+func mainMagazines(d Digest) map[int64]bool {
+	out := map[int64]bool{}
+	if d.Featured != nil {
+		out[d.Featured.Item.Magazine.ID] = true
+	}
+	for _, it := range d.More {
+		out[it.Magazine.ID] = true
+	}
+	return out
+}
+
+// Discover is the busiest threads left, in rank order, from magazines the
+// member does not follow and the main list does not show.
+func TestDiscoverPicksBusiestElsewhere(t *testing.T) {
+	var items []Item
+	// Magazine 1 is followed; 2 to 7 fill the main list; 8 to 11 are left.
+	items = append(items, entry(1, 1, 50, 50, 50))
+	for i := int64(2); i <= 7; i++ {
+		items = append(items, entry(i, i, 100, 100, 100))
+	}
+	items = append(items, entry(8, 8, 3, 0, 0), entry(9, 9, 9, 0, 0), entry(10, 10, 6, 0, 0), entry(11, 11, 1, 0, 0))
+	v := View{Subscribed: map[int64]bool{1: true}}
+	d := discover(t, items, v)
+	if got := keys(d.Discover); !eq(got, []int64{9, 10, 8}) {
+		t.Fatalf("got %v", got)
+	}
+}
+
+func TestDiscoverOnePerMagazine(t *testing.T) {
+	items := []Item{entry(1, 1, 100, 100, 100), entry(2, 2, 9, 0, 0), entry(3, 2, 8, 0, 0), entry(4, 3, 1, 0, 0)}
+	// The main list is only the featured thread, so magazines 2 and 3 are
+	// open to Discover, and magazine 2's busier thread wins.
+	d := Digest{Featured: &Featured{Item: items[0]}}
+	d.AddDiscover(items, View{})
+	if got := keys(d.Discover); !eq(got, []int64{2, 4}) {
+		t.Fatalf("got %v", got)
+	}
+}
+
+func TestDiscoverSkipsMainListMagazines(t *testing.T) {
+	items := []Item{entry(1, 1, 1, 0, 0), entry(2, 2, 1, 0, 0), entry(3, 1, 500, 0, 0), entry(4, 2, 400, 0, 0),
+		entry(5, 3, 1, 0, 0), entry(6, 4, 1, 0, 0)}
+	d := Digest{Featured: &Featured{Item: items[0]}, More: []Item{items[1]}}
+	d.AddDiscover(items, View{})
+	if got := keys(d.Discover); !eq(got, []int64{5, 6}) {
+		t.Fatalf("got %v", got)
+	}
+}
+
+func TestDiscoverExcludes(t *testing.T) {
+	ok1, ok2 := entry(1, 1, 1, 0, 0), entry(2, 2, 1, 0, 0)
+	subscribed := entry(3, 3, 90, 0, 0)
+	federated := fed(4, 4, 90, 0, 0)
+	joined := entry(5, 5, 90, 0, 0)
+	blockedMag := entry(6, 6, 90, 0, 0)
+	bannedMag := entry(7, 7, 90, 0, 0)
+	blockedAuthor := entry(8, 8, 90, 0, 0)
+	shown := entry(9, 9, 90, 0, 0)
+	shown.NewComments = 5
+	v := View{
+		Subscribed:       map[int64]bool{3: true},
+		Joined:           map[Key]bool{joined.Key: true},
+		BlockedMagazines: map[int64]bool{6: true},
+		BannedMagazines:  map[int64]bool{7: true},
+		BlockedUsers:     map[int64]bool{blockedAuthor.AuthorID: true},
+		Shown:            map[Key]bool{shown.Key: true},
+	}
+	d := Digest{}
+	d.AddDiscover([]Item{ok1, ok2, subscribed, federated, joined, blockedMag, bannedMag, blockedAuthor, shown}, v)
+	if got := keys(d.Discover); !eq(got, []int64{1, 2}) {
+		t.Fatalf("got %v", got)
+	}
+}
+
+func TestDiscoverNeedsTwo(t *testing.T) {
+	v := View{Following: []Magazine{{ID: 9, Name: "nine"}}}
+	d := Digest{}
+	d.AddDiscover([]Item{entry(1, 1, 1, 0, 0)}, v)
+	if d.Discover != nil || d.Following != nil || d.FollowingMore != 0 {
+		t.Fatalf("one thread gave %v, %v, %d", keys(d.Discover), d.Following, d.FollowingMore)
+	}
+	d.AddDiscover([]Item{entry(1, 1, 1, 0, 0), entry(2, 2, 1, 0, 0)}, v)
+	if len(d.Discover) != 2 {
+		t.Fatalf("two threads gave %v", keys(d.Discover))
+	}
+}
+
+func TestDiscoverFollowing(t *testing.T) {
+	items := []Item{entry(1, 1, 1, 0, 0), entry(2, 2, 1, 0, 0)}
+	var following []Magazine
+	for i := int64(11); i <= 15; i++ {
+		following = append(following, Magazine{ID: i, Name: fmt.Sprintf("m%d", i)})
+	}
+	d := Digest{}
+	d.AddDiscover(items, View{Following: following})
+	if !slices.Equal(d.Following, following[:3]) || d.FollowingMore != 2 {
+		t.Fatalf("got %v and %d more", d.Following, d.FollowingMore)
+	}
+	d = Digest{}
+	d.AddDiscover(items, View{})
+	if len(d.Discover) != 2 || d.Following != nil || d.FollowingMore != 0 {
+		t.Fatalf("following nothing gave %v, %v, %d", keys(d.Discover), d.Following, d.FollowingMore)
+	}
+}
+
+func TestUnansweredSkipsDiscover(t *testing.T) {
+	a, b := fresh(1, 1), fresh(2, 2)
+	d := Digest{Discover: []Item{a}}
+	d.AddUnanswered([]Item{a, b}, View{}, seeded(1))
+	if got := keys(d.Unanswered); !eq(got, []int64{2}) {
+		t.Fatalf("got %v", got)
+	}
+}
+
+// An empty view, as a preview has, follows nothing and has nil maps.
+func TestDiscoverEmptyView(t *testing.T) {
+	items := []Item{entry(1, 1, 100, 100, 100), entry(2, 2, 5, 0, 0), entry(3, 3, 4, 0, 0)}
+	d := Digest{Featured: &Featured{Item: items[0]}}
+	d.AddDiscover(items, View{})
+	if got := keys(d.Discover); !eq(got, []int64{2, 3}) {
+		t.Fatalf("got %v", got)
+	}
+	if mainMagazines(d)[2] {
+		t.Fatal("main list and Discover share a magazine")
 	}
 }

@@ -25,10 +25,12 @@ type Item struct {
 	ID   int64
 }
 
-// Unsubscribe records that the member never wants the digest again, and
-// forgets which threads they were shown. Calling it twice changes nothing, so
-// a repeated click on the link is harmless.
-func (s *Store) Unsubscribe(ctx context.Context, subject string) error {
+// Unsubscribe records that the member never wants the email digest again.
+// Which threads they were shown is forgotten once no channel is left: always
+// when matrix is false (the deployment has no homeserver), otherwise when the
+// member's Matrix digest is off too. Calling it twice changes nothing, so a
+// repeated click on the link is harmless.
+func (s *Store) Unsubscribe(ctx context.Context, subject string, matrix bool) error {
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
 		return err
@@ -37,15 +39,18 @@ func (s *Store) Unsubscribe(ctx context.Context, subject string) error {
 	if _, err := tx.Exec(ctx, `INSERT INTO unsubscribes (subject) VALUES ($1) ON CONFLICT (subject) DO NOTHING`, subject); err != nil {
 		return err
 	}
-	if _, err := tx.Exec(ctx, `DELETE FROM shown WHERE subject=$1`, subject); err != nil {
+	if _, err := tx.Exec(ctx,
+		`DELETE FROM shown WHERE subject=$1 AND ($2 OR EXISTS (SELECT 1 FROM matrix_members WHERE subject=$1 AND NOT enabled))`,
+		subject, !matrix); err != nil {
 		return err
 	}
 	return tx.Commit(ctx)
 }
 
-// Shown is every thread an earlier digest showed the member.
-func (s *Store) Shown(ctx context.Context, subject string) (map[Item]bool, error) {
-	rows, err := s.pool.Query(ctx, `SELECT DISTINCT kind, item_id FROM shown WHERE subject=$1`, subject)
+// Shown is every thread an earlier digest showed the member, in weeks strictly
+// before the date of before.
+func (s *Store) Shown(ctx context.Context, subject string, before time.Time) (map[Item]bool, error) {
+	rows, err := s.pool.Query(ctx, `SELECT DISTINCT kind, item_id FROM shown WHERE subject=$1 AND week < $2::date`, subject, weekDate(before))
 	if err != nil {
 		return nil, err
 	}
@@ -85,13 +90,24 @@ func (s *Store) Claim(ctx context.Context, subject string, week time.Time) (bool
 // finished, since writing a status for a row nobody holds, or over one
 // already recorded, would hide a bug.
 func (s *Store) Finish(ctx context.Context, subject string, week time.Time, status Status, shown ...Item) error {
+	return s.finish(ctx, tableSends, subject, week, status, shown...)
+}
+
+// Tables a send is recorded in. finish takes only these, never input.
+const (
+	tableSends   = "sends"
+	tableDMSends = "dm_sends"
+)
+
+// finish is Finish for the given send table, one of the constants above.
+func (s *Store) finish(ctx context.Context, table, subject string, week time.Time, status Status, shown ...Item) error {
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
 		return err
 	}
 	defer tx.Rollback(ctx)
 	tag, err := tx.Exec(ctx,
-		`UPDATE sends SET status=$3, at=now() WHERE subject=$1 AND week=$2::date AND status='pending'`,
+		"UPDATE "+table+" SET status=$3, at=now() WHERE subject=$1 AND week=$2::date AND status='pending'",
 		subject, weekDate(week), string(status))
 	if err != nil {
 		return err

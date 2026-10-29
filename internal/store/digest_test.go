@@ -22,7 +22,7 @@ func TestUnsubscribeIsIdempotent(t *testing.T) {
 		t.Fatalf("before: got %v, %v", got, err)
 	}
 	for i := 0; i < 2; i++ {
-		if err := s.Unsubscribe(ctx, "sub-1"); err != nil {
+		if err := s.Unsubscribe(ctx, "sub-1", false); err != nil {
 			t.Fatalf("unsubscribe %d: %v", i, err)
 		}
 	}
@@ -213,14 +213,14 @@ func TestFinishRecordsShown(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	got, err := s.Shown(ctx, "sub-1")
+	got, err := s.Shown(ctx, "sub-1", monday.AddDate(0, 0, 14))
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(got) != 2 || !got[a] || !got[b] {
 		t.Fatalf("got %v", got)
 	}
-	if got, err := s.Shown(ctx, "sub-2"); err != nil || len(got) != 0 {
+	if got, err := s.Shown(ctx, "sub-2", monday.AddDate(0, 0, 14)); err != nil || len(got) != 0 {
 		t.Fatalf("another subject: %v, %v", got, err)
 	}
 }
@@ -232,7 +232,7 @@ func TestFinishFailureRecordsNoShown(t *testing.T) {
 	if err := s.Finish(ctx, "sub-1", monday, store.StatusSent, store.Item{Kind: "entry", ID: 1}); err == nil {
 		t.Fatal("finishing a send that was never claimed should fail")
 	}
-	if got, err := s.Shown(ctx, "sub-1"); err != nil || len(got) != 0 {
+	if got, err := s.Shown(ctx, "sub-1", monday.AddDate(0, 0, 14)); err != nil || len(got) != 0 {
 		t.Fatalf("got %v, %v", got, err)
 	}
 }
@@ -248,13 +248,35 @@ func TestUnsubscribeForgetsShown(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	if err := s.Unsubscribe(ctx, "sub-1"); err != nil {
+	if err := s.Unsubscribe(ctx, "sub-1", false); err != nil {
 		t.Fatal(err)
 	}
-	if got, err := s.Shown(ctx, "sub-1"); err != nil || len(got) != 0 {
+	if got, err := s.Shown(ctx, "sub-1", monday.AddDate(0, 0, 14)); err != nil || len(got) != 0 {
 		t.Fatalf("unsubscribed: %v, %v", got, err)
 	}
-	if got, err := s.Shown(ctx, "sub-2"); err != nil || len(got) != 1 {
+	if got, err := s.Shown(ctx, "sub-2", monday.AddDate(0, 0, 14)); err != nil || len(got) != 1 {
 		t.Fatalf("another subject: %v, %v", got, err)
+	}
+}
+
+func TestShownBeforeWeek(t *testing.T) {
+	s := storetest.New(t)
+	ctx := context.Background()
+	old, recent := store.Item{Kind: "entry", ID: 1}, store.Item{Kind: "entry", ID: 2}
+	for i, it := range []store.Item{old, recent} {
+		week := monday.AddDate(0, 0, 7*i-7)
+		if _, err := s.Claim(ctx, "sub-1", week); err != nil {
+			t.Fatal(err)
+		}
+		if err := s.Finish(ctx, "sub-1", week, store.StatusSent, it); err != nil {
+			t.Fatal(err)
+		}
+	}
+	got, err := s.Shown(ctx, "sub-1", monday)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 || !got[old] {
+		t.Fatalf("got %v", got)
 	}
 }

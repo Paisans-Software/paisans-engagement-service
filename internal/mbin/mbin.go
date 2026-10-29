@@ -4,9 +4,11 @@
 package mbin
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"fmt"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -16,8 +18,9 @@ import (
 	"github.com/paisans-software/paisans-engagement-service/internal/digest"
 )
 
-// titleRunes is how much of a microblog post stands in for its title.
-const titleRunes = 120
+// titleRunes is how much of a microblog post stands in for its title, which
+// the email quotes.
+const titleRunes = 200
 
 type Source struct {
 	pool    *pgxpool.Pool
@@ -40,21 +43,37 @@ func newSource(pool *pgxpool.Pool, siteURL string) *Source {
 
 func (s *Source) Close() { s.pool.Close() }
 
-// Members is everyone who may receive the digest, by Mbin user id.
+// Members is everyone who may receive the digest, by Mbin user id. Email is
+// empty for a member without a verified address.
 func (s *Source) Members(ctx context.Context) ([]digest.Member, error) {
 	rows, err := s.pool.Query(ctx, membersSQL)
 	if err != nil {
 		return nil, fmt.Errorf("members: %w", err)
 	}
 	ms, err := pgx.CollectRows(rows, func(r pgx.CollectableRow) (digest.Member, error) {
-		var m digest.Member
-		err := r.Scan(&m.ID, &m.Subject, &m.Email, &m.Username)
+		var (
+			m     digest.Member
+			email *string
+		)
+		err := r.Scan(&m.ID, &m.Subject, &email, &m.Username)
+		if email != nil {
+			m.Email = *email
+		}
 		return m, err
 	})
 	if err != nil {
 		return nil, fmt.Errorf("members: %w", err)
 	}
 	return ms, nil
+}
+
+// IsMember reports whether the Pocket ID subject belongs to a member.
+func (s *Source) IsMember(ctx context.Context, subject string) (bool, error) {
+	var ok bool
+	if err := s.pool.QueryRow(ctx, isMemberSQL, subject).Scan(&ok); err != nil {
+		return false, fmt.Errorf("is member: %w", err)
+	}
+	return ok, nil
 }
 
 // Hot is the week's candidate threads, best first by score plus comments.
@@ -80,17 +99,7 @@ func (s *Source) Hot(ctx context.Context, from, to time.Time) ([]digest.Item, er
 		if err != nil {
 			return it, err
 		}
-		it.Key.Kind = digest.Kind(kind)
-		if text != nil {
-			it.Title = *text
-		}
-		if it.Key.Kind == digest.KindPost {
-			it.Title = digest.Plain(it.Title, titleRunes)
-		} else {
-			it.Title = oneLine(it.Title)
-		}
-		it.Magazine.Title = oneLine(it.Magazine.Title)
-		it.URL = s.url(it, slug)
+		s.dress(&it, kind, slug, text)
 		if it.TopComments, err = topComments(comments); err != nil {
 			return it, err
 		}
@@ -103,6 +112,55 @@ func (s *Source) Hot(ctx context.Context, from, to time.Time) ([]digest.Item, er
 		return nil, fmt.Errorf("hot: %w", err)
 	}
 	return items, nil
+}
+
+// Unanswered is the week's new local threads that nobody but their author
+// has answered, newest first. Per member rules are the digest package's, as
+// for Hot.
+func (s *Source) Unanswered(ctx context.Context, from, to time.Time) ([]digest.Item, error) {
+	rows, err := s.pool.Query(ctx, unansweredSQL, from, to)
+	if err != nil {
+		return nil, fmt.Errorf("unanswered: %w", err)
+	}
+	items, err := pgx.CollectRows(rows, func(r pgx.CollectableRow) (digest.Item, error) {
+		var (
+			it         digest.Item
+			kind       string
+			slug, text *string
+		)
+		err := r.Scan(&kind, &it.Key.ID, &it.AuthorID, &slug, &text,
+			&it.Magazine.ID, &it.Magazine.Name, &it.Magazine.Title)
+		if err != nil {
+			return it, err
+		}
+		s.dress(&it, kind, slug, text)
+		return it, nil
+	})
+	if err != nil {
+		return nil, fmt.Errorf("unanswered: %w", err)
+	}
+	return items, nil
+}
+
+// dress fills in what a scanned item shows: its kind, its title, a post's
+// body cut down to one without its links, and its link.
+func (s *Source) dress(it *digest.Item, kind string, slug, text *string) {
+	it.Key.Kind = digest.Kind(kind)
+	if text != nil {
+		it.Title = *text
+	}
+	if it.Key.Kind == digest.KindPost {
+		body := it.Title
+		it.Title = digest.Plain(body, titleRunes)
+		// A post that is only a link is named by where it points.
+		if h := digest.Host(body); it.Title == "" && h != "" {
+			it.Title = h + "…"
+		}
+	} else {
+		it.Title = oneLine(it.Title)
+	}
+	it.Magazine.Title = oneLine(it.Magazine.Title)
+	it.URL = s.url(*it, slug)
 }
 
 // topComments decodes a JSON list of comments from hotSQL; nil is none.
@@ -167,13 +225,17 @@ func (s *Source) View(ctx context.Context, m digest.Member, from, to time.Time, 
 		"blocked_user":     v.BlockedUsers,
 	}
 	var (
-		set string
-		id  int64
+		set         string
+		id          int64
+		name, title string
 	)
-	_, err = pgx.ForEachRow(rows, []any{&set, &id}, func() error {
-		if set == "visited" {
+	_, err = pgx.ForEachRow(rows, []any{&set, &id, &name, &title}, func() error {
+		switch set {
+		case "visited":
 			v.Visited = true
-		} else {
+		case "following":
+			v.Following = append(v.Following, digest.Magazine{ID: id, Name: name, Title: oneLine(title)})
+		default:
 			sets[set][id] = true
 		}
 		return nil
@@ -181,6 +243,9 @@ func (s *Source) View(ctx context.Context, m digest.Member, from, to time.Time, 
 	if err != nil {
 		return v, fmt.Errorf("view of %d: %w", m.ID, err)
 	}
+	slices.SortFunc(v.Following, func(a, b digest.Magazine) int {
+		return cmp.Or(cmp.Compare(a.Name, b.Name), cmp.Compare(a.ID, b.ID))
+	})
 
 	if len(items) == 0 {
 		return v, nil

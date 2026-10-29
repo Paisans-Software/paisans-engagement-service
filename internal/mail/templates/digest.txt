@@ -1,19 +1,28 @@
-Your week on {{.Meta}}
+This week on {{.Meta}}
 {{.Dates}}
 
 {{.Stats.NewThreads}} new threads | {{.Stats.Comments}} comments | {{.Stats.NewMembers}} new members
 {{with .Featured}}
-{{.Magazine}} · the big one this week{{if .Label}} · {{.Label}}{{end}}
-{{.Title}}
-{{.URL}}
-{{.Figure}}
+{{template "item" .}}
 {{if .Excerpt}}"{{.Excerpt}}"
 {{end}}{{end}}{{range .More}}
-{{.Title}}
-{{.URL}}
-{{.Magazine}}{{if .Label}} · {{.Label}}{{end}} · {{.Figure}}
-{{end}}
-See everything on {{.Instance}}: {{.SiteURL}}
+{{template "item" .}}
+{{end}}{{if .Discover}}
+{{.DiscoverHeading}}
+{{.DiscoverLine}}
+{{range .Discover}}
+{{template "item" .}}
+{{end}}{{end}}{{if .Unanswered}}
+{{.UnansweredHeading}}
+{{range .Unanswered}}
+{{template "item" .}}
+{{end}}{{end}}
+View Everything: {{.SiteURL}}
 
 You get this because you're a member of {{.Meta}}.
 Unsubscribe from the weekly digest: {{.Unsubscribe}}
+{{define "item"}}{{if .Post}}"{{.Title}}"
+{{.Magazine}}
+{{.URL}}{{else}}{{.Title}}
+{{.URL}}
+{{.Magazine}}{{end}}{{end}}

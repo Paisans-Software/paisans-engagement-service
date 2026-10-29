@@ -1,11 +1,12 @@
 <!doctype html>
 <html>
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>This week on {{.Meta}}</title></head>
 <body style="margin:0;padding:0;background:#ffffff;">
 <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:#ffffff;">
 <tr><td align="center" style="padding:18px;">
 <table role="presentation" width="420" cellpadding="0" cellspacing="0" style="width:100%;max-width:420px;color:#222222;font:14px/1.45 -apple-system,Helvetica,Arial,sans-serif;">
 <tr><td>
-<h1 style="margin:0 0 2px;font-size:17px;">Your week on {{.Meta}}</h1>
+<h1 style="margin:0 0 2px;font-size:17px;">This week on {{.Meta}}</h1>
 <div style="color:#777777;font-size:12px;">{{.Dates}}</div>
 <table role="presentation" width="100%" cellpadding="0" cellspacing="6" style="margin:10px 0;">
 <tr>
@@ -15,17 +16,33 @@
 </tr>
 </table>
 {{with .Featured}}<div style="background:#f4f7fb;border-radius:6px;padding:12px;margin:12px 0;">
-<div style="color:#22aa66;font-size:12px;font-weight:600;">{{.Magazine}} · the big one this week{{if .Label}} · {{.Label}}{{end}}</div>
-<a href="{{.URL}}" style="color:#1144cc;text-decoration:none;font-weight:600;font-size:16px;">{{.Title}}</a>
-<div style="color:#888888;font-size:12px;">{{.Figure}}</div>
+{{if .Post}}<div style="font-size:15px;">&ldquo;{{.Title}}&rdquo;</div>
+<div style="font-size:12px;"><a href="{{.URL}}" style="color:#22aa66;text-decoration:none;font-weight:600;">{{.Magazine}}</a></div>{{else}}<a href="{{.URL}}" style="color:#1144cc;text-decoration:none;font-weight:600;font-size:16px;">{{.Title}}</a>
+<div style="color:#888888;font-size:12px;"><span style="color:#22aa66;font-weight:600;">{{.Magazine}}</span></div>{{end}}
 {{if .Excerpt}}<div style="color:#aa6600;font-size:12px;">&ldquo;{{.Excerpt}}&rdquo;</div>
 {{end}}</div>
 {{end}}{{range .More}}<div style="padding:9px 0;border-bottom:1px solid #eeeeee;">
-<a href="{{.URL}}" style="color:#1144cc;text-decoration:none;font-weight:600;">{{.Title}}</a>
-<div style="color:#888888;font-size:12px;"><span style="color:#22aa66;font-weight:600;">{{.Magazine}}</span>{{if .Label}} · {{.Label}}{{end}} · {{.Figure}}</div>
+{{if .Post}}<div>&ldquo;{{.Title}}&rdquo;</div>
+<div style="font-size:12px;"><a href="{{.URL}}" style="color:#22aa66;text-decoration:none;font-weight:600;">{{.Magazine}}</a></div>{{else}}<a href="{{.URL}}" style="color:#1144cc;text-decoration:none;font-weight:600;">{{.Title}}</a>
+<div style="color:#888888;font-size:12px;"><span style="color:#22aa66;font-weight:600;">{{.Magazine}}</span></div>{{end}}
 </div>
-{{end}}<div style="text-align:center;"><a href="{{.SiteURL}}" style="display:inline-block;background:#1144cc;color:#ffffff;padding:7px 12px;border-radius:4px;font-size:13px;margin-top:10px;text-decoration:none;">See everything on {{.Instance}}</a></div>
-<div style="margin-top:14px;color:#999999;font-size:11px;text-align:center;">You get this because you're a member of {{.Meta}}.<br><a href="{{.Unsubscribe}}" style="color:#999999;">Unsubscribe from the weekly digest</a></div>
+{{end}}{{if .Discover}}<div style="background:#f3faf6;border-radius:6px;padding:12px;margin:14px 0 0;">
+<div style="font-size:13px;font-weight:600;">{{.DiscoverHeading}}</div>
+<div style="color:#888888;font-size:12px;">{{.DiscoverLine}}</div>
+{{range $i, $_ := .Discover}}<div style="padding:9px 0;{{if $i}}border-top:1px solid #eeeeee;{{end}}">
+{{if .Post}}<div>&ldquo;{{.Title}}&rdquo;</div>
+<div style="font-size:12px;"><a href="{{.URL}}" style="color:#22aa66;text-decoration:none;font-weight:600;">{{.Magazine}}</a></div>{{else}}<a href="{{.URL}}" style="color:#1144cc;text-decoration:none;font-weight:600;">{{.Title}}</a>
+<div style="color:#888888;font-size:12px;"><span style="color:#22aa66;font-weight:600;">{{.Magazine}}</span></div>{{end}}
+</div>
+{{end}}</div>
+{{end}}{{if .Unanswered}}<div style="margin:14px 0 0;font-size:13px;font-weight:600;">{{.UnansweredHeading}}</div>
+{{range .Unanswered}}<div style="padding:9px 0;border-bottom:1px solid #eeeeee;">
+{{if .Post}}<div>&ldquo;{{.Title}}&rdquo;</div>
+<div style="font-size:12px;"><a href="{{.URL}}" style="color:#22aa66;text-decoration:none;font-weight:600;">{{.Magazine}}</a></div>{{else}}<a href="{{.URL}}" style="color:#1144cc;text-decoration:none;font-weight:600;">{{.Title}}</a>
+<div style="color:#888888;font-size:12px;"><span style="color:#22aa66;font-weight:600;">{{.Magazine}}</span></div>{{end}}
+</div>
+{{end}}{{end}}<div style="text-align:center;"><a href="{{.SiteURL}}" style="display:inline-block;background:#1144cc;color:#ffffff;padding:7px 12px;border-radius:4px;font-size:13px;margin-top:10px;text-decoration:none;">View Everything</a></div>
+<div style="margin-top:14px;color:#999999;font-size:11px;text-align:center;">You get this because you're a member of {{.Meta}}.{{if .Unsubscribe}}<br><a href="{{.Unsubscribe}}" style="color:#999999;">Unsubscribe from the weekly digest</a>{{end}}</div>
 </td></tr>
 </table>
 </td></tr>

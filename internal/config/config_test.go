@@ -14,7 +14,6 @@ func env(over map[string]string) func(string) string {
 		"ENGAGEMENT_DATABASE_URL":      "postgres://own",
 		"ENGAGEMENT_MBIN_DATABASE_URL": "postgres://mbin",
 		"ENGAGEMENT_MBIN_URL":          "https://forum.example.org",
-		"ENGAGEMENT_INSTANCE_TITLE":    "Example Forum",
 		"ENGAGEMENT_META_TITLE":        "Example",
 		"ENGAGEMENT_SIGNING_KEY":       key,
 	}
@@ -41,8 +40,9 @@ func TestLoadValid(t *testing.T) {
 	want := Config{
 		ListenAddr: "127.0.0.1:9000", PublicURL: "https://digest.example.org",
 		DatabaseURL: "postgres://own", MbinDatabaseURL: "postgres://mbin", MbinURL: "https://forum.example.org",
-		InstanceTitle: "Example Forum", MetaTitle: "Example", SigningKey: make([]byte, 32),
-		SMTP: SMTP{Host: "mail.example.org", Port: 465, User: "u", Password: "p", From: "digest@example.org", FromName: "Example", TLS: "tls"},
+		MetaTitle: "Example", SigningKey: make([]byte, 32),
+		SMTP:   SMTP{Host: "mail.example.org", Port: 465, User: "u", Password: "p", From: "digest@example.org", FromName: "Example", TLS: "tls"},
+		Matrix: Matrix{BotDisplayName: "Community Bot"},
 	}
 	if !reflect.DeepEqual(c, want) {
 		t.Fatalf("got %+v, want %+v", c, want)
@@ -66,7 +66,7 @@ func TestLoadReportsEveryProblem(t *testing.T) {
 	}
 	for _, k := range []string{
 		"ENGAGEMENT_PUBLIC_URL", "ENGAGEMENT_DATABASE_URL", "ENGAGEMENT_MBIN_DATABASE_URL", "ENGAGEMENT_MBIN_URL",
-		"ENGAGEMENT_INSTANCE_TITLE", "ENGAGEMENT_META_TITLE", "ENGAGEMENT_SIGNING_KEY",
+		"ENGAGEMENT_META_TITLE", "ENGAGEMENT_SIGNING_KEY",
 	} {
 		if !strings.Contains(err.Error(), k) {
 			t.Errorf("error does not name %s: %v", k, err)
@@ -138,12 +138,125 @@ func TestLoadMissingKeyOneError(t *testing.T) {
 // These values reach mail headers or links, where a line break would let
 // the value add a header of its own.
 func TestLoadRejectsLineBreaks(t *testing.T) {
-	for _, k := range []string{"ENGAGEMENT_META_TITLE", "ENGAGEMENT_INSTANCE_TITLE", "ENGAGEMENT_PUBLIC_URL", "ENGAGEMENT_MBIN_URL"} {
+	for _, k := range []string{"ENGAGEMENT_META_TITLE", "ENGAGEMENT_PUBLIC_URL", "ENGAGEMENT_MBIN_URL"} {
 		for _, br := range []string{"\r", "\n"} {
 			v := "https://x.example.org" + br + "Bcc: someone@example.org"
 			_, err := Load(env(map[string]string{k: v}))
 			if err == nil || !strings.Contains(err.Error(), k+" must be one line") {
 				t.Errorf("%s with %q: got %v", k, br, err)
+			}
+		}
+	}
+}
+
+const (
+	ulidA = "01HZX3K8Q2M5N7P9R1S3T5V7W9"
+	ulidB = "01J0A2B3C4D5E6F7G8H9JKMNPQ"
+)
+
+func matrixEnv() map[string]string {
+	return map[string]string{
+		"ENGAGEMENT_MATRIX_URL":            "https://matrix.example.org",
+		"ENGAGEMENT_MATRIX_SERVER_NAME":    "example.org",
+		"ENGAGEMENT_MAS_ADMIN_URL":         "http://10.0.0.5:18010",
+		"ENGAGEMENT_MAS_CLIENT_ID":         ulidA,
+		"ENGAGEMENT_MAS_CLIENT_SECRET":     "s3cret",
+		"ENGAGEMENT_MAS_UPSTREAM_PROVIDER": ulidB,
+		"ENGAGEMENT_MATRIX_BOT_LOCALPART":  "community-bot",
+	}
+}
+
+func TestMatrixOffWithoutVariables(t *testing.T) {
+	c, err := Load(env(nil))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.Matrix.Enabled() || len(c.Matrix.Missing()) != 7 {
+		t.Fatalf("matrix = %+v, missing %v", c.Matrix, c.Matrix.Missing())
+	}
+}
+
+func TestMatrixOnWithAllSeven(t *testing.T) {
+	c, err := Load(env(matrixEnv()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := Matrix{
+		URL: "https://matrix.example.org", ServerName: "example.org", MASAdminURL: "http://10.0.0.5:18010",
+		ClientID: ulidA, ClientSecret: "s3cret", UpstreamProvider: ulidB, BotLocalpart: "community-bot",
+		BotDisplayName: "Community Bot",
+	}
+	if !c.Matrix.Enabled() || c.Matrix != want || len(c.Matrix.Missing()) != 0 {
+		t.Fatalf("got %+v", c.Matrix)
+	}
+}
+
+// The display name is optional: it is not one of the seven, and it is
+// trimmed.
+func TestMatrixBotDisplayName(t *testing.T) {
+	for in, want := range map[string]string{
+		"": "Community Bot", "Paisans Bot": "Paisans Bot", "  Paisans Bot\t": "Paisans Bot",
+		strings.Repeat("é", 256): strings.Repeat("é", 256),
+	} {
+		o := matrixEnv()
+		o["ENGAGEMENT_MATRIX_BOT_DISPLAY_NAME"] = in
+		c, err := Load(env(o))
+		if err != nil {
+			t.Fatalf("%q: %v", in, err)
+		}
+		if c.Matrix.BotDisplayName != want || !c.Matrix.Enabled() {
+			t.Errorf("%q: got %q", in, c.Matrix.BotDisplayName)
+		}
+	}
+	o := matrixEnv()
+	delete(o, "ENGAGEMENT_MATRIX_BOT_LOCALPART")
+	o["ENGAGEMENT_MATRIX_BOT_DISPLAY_NAME"] = "Paisans Bot"
+	c, err := Load(env(o))
+	if err != nil || c.Matrix.Enabled() || len(c.Matrix.Missing()) != 1 {
+		t.Fatalf("err %v, missing %v", err, c.Matrix.Missing())
+	}
+	if c, _ := Load(env(map[string]string{"ENGAGEMENT_MATRIX_BOT_DISPLAY_NAME": "Paisans Bot"})); len(c.Matrix.Missing()) != 7 {
+		t.Fatalf("missing %v", c.Matrix.Missing())
+	}
+}
+
+func TestMatrixPartialIsOff(t *testing.T) {
+	o := matrixEnv()
+	delete(o, "ENGAGEMENT_MAS_CLIENT_SECRET")
+	c, err := Load(env(o))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.Matrix.Enabled() || !reflect.DeepEqual(c.Matrix.Missing(), []string{"ENGAGEMENT_MAS_CLIENT_SECRET"}) {
+		t.Fatalf("matrix = %+v, missing %v", c.Matrix, c.Matrix.Missing())
+	}
+}
+
+func TestMatrixValidation(t *testing.T) {
+	for _, tc := range []struct{ name, value string }{
+		{"ENGAGEMENT_MATRIX_URL", "matrix.example.org"},
+		{"ENGAGEMENT_MATRIX_URL", "https://m.example.org/"},
+		{"ENGAGEMENT_MAS_ADMIN_URL", "mas.example.org"},
+		{"ENGAGEMENT_MAS_ADMIN_URL", "http://10.0.0.5:18010/"},
+		{"ENGAGEMENT_MATRIX_BOT_LOCALPART", "Digest"},
+		{"ENGAGEMENT_MATRIX_BOT_LOCALPART", "digest bot"},
+		{"ENGAGEMENT_MAS_UPSTREAM_PROVIDER", "nope"},
+		{"ENGAGEMENT_MAS_CLIENT_ID", "nope"},
+		{"ENGAGEMENT_MATRIX_SERVER_NAME", "example.org\nevil"},
+		{"ENGAGEMENT_MATRIX_BOT_DISPLAY_NAME", "   "},
+		{"ENGAGEMENT_MATRIX_BOT_DISPLAY_NAME", "Paisans\nBot"},
+		{"ENGAGEMENT_MATRIX_BOT_DISPLAY_NAME", strings.Repeat("é", 257)},
+	} {
+		o := matrixEnv()
+		o[tc.name] = tc.value
+		_, err := Load(env(o))
+		if err == nil {
+			t.Errorf("%s=%q: no error", tc.name, tc.value)
+			continue
+		}
+		for _, line := range strings.Split(err.Error(), "\n") {
+			if !strings.Contains(line, tc.name) {
+				t.Errorf("%s=%q: error about something else: %q", tc.name, tc.value, line)
 			}
 		}
 	}

@@ -6,6 +6,8 @@ import (
 	"net/http/httptest"
 	"sync/atomic"
 	"testing"
+
+	"github.com/paisans-software/paisans-engagement-service/internal/bot"
 )
 
 // healthcheck probes 127.0.0.1 on the listen address's port, whatever host
@@ -48,5 +50,13 @@ func TestHealthcheckBadAddress(t *testing.T) {
 		if code := healthcheck(addr); code != 1 {
 			t.Errorf("healthcheck(%q) = %d, want 1", addr, code)
 		}
+	}
+}
+
+// A Holder with no bot must give the runner an untyped nil, not a nil
+// *bot.Bot inside the interface, which would pass the runner's nil check.
+func TestRunnerMatrixNilIsUntyped(t *testing.T) {
+	if dm := dmFrom(&bot.Holder{})(); dm != nil {
+		t.Fatalf("dmFrom(empty holder)() = %#v, want untyped nil", dm)
 	}
 }
