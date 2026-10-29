@@ -14,11 +14,17 @@ const wantRoomBody = `{"preset":"private_chat","is_direct":true,"invite":["@one:
  "creation_content":{"m.federate":false},
  "initial_state":[{"type":"m.room.history_visibility","state_key":"","content":{"history_visibility":"invited"}}],
  "power_level_content_override":{
-   "users":{"@digest-bot:example.org":100},"users_default":0,"events_default":0,"state_default":100,
+   "users_default":0,"events_default":0,"state_default":100,
    "invite":100,"kick":100,"ban":100,"redact":100,
    "events":{"m.room.encryption":100,"m.room.power_levels":100,"m.room.history_visibility":100,
              "m.room.name":100,"m.room.topic":100,"m.room.avatar":100,"m.room.tombstone":100,"m.room.server_acl":100}}}`
 
+// The power levels never name the bot. A room of version 12, Synapse's
+// default since it implemented MSC4289, refuses a createRoom whose
+// power_level_content_override lists the creator in users ("Creator user ...
+// must not appear in content.users"); in an older version Synapse's own
+// default already gives the creator 100, and the override replaces only the
+// keys it names.
 func TestCreateDirectRoomBody(t *testing.T) {
 	c, srv, _ := newClient(t, fast)
 	id, err := c.CreateDirectRoom(context.Background(), "@digest-bot:example.org", "@one:example.org")
