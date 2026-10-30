@@ -143,9 +143,10 @@ var errNotFound = errors.New("mbin: not found")
 // maxReason bounds the reason a refusal quotes, in characters.
 const maxReason = 200
 
-// reason is Mbin's own explanation from a refusal's body, on one line: the
-// problem's detail, else its title. It never holds a credential, since the
-// request carried none in its body.
+// reason is the problem's detail from a refusal's body, else its title, on one
+// line. Mbin puts its own explanation there only with debug on, so in
+// production a 400 usually reads "Bad Request" and a 403 "Forbidden". It never
+// holds a credential, since the request carried none in its body.
 func reason(b []byte) string {
 	var p struct{ Detail, Title, Message string }
 	if json.Unmarshal(b, &p) != nil {
