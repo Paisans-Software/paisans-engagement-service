@@ -5,6 +5,8 @@ All notable changes to this project are documented here, in the
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-11-02
+
 ### Added
 
 - Every five minutes, one thread in `/m/welcome` names the members who just joined Mbin and subscribes them to it; the bot creates the magazine, moderator only, when Mbin has none.
