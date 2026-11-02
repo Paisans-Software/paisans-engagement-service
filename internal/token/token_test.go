@@ -88,3 +88,23 @@ func TestLineBreakFails(t *testing.T) {
 		}
 	}
 }
+
+func TestWelcomeTokenIsNotADigestToken(t *testing.T) {
+	w := SignFor(key, Welcome, "s")
+	if _, ok := Verify(key, w); ok {
+		t.Fatal("a welcome token verified as a digest token")
+	}
+	if p, sub, ok := VerifyFor(key, w); !ok || p != Welcome || sub != "s" {
+		t.Fatalf("VerifyFor(welcome) = %q, %q, %v", p, sub, ok)
+	}
+	if p, sub, ok := VerifyFor(key, Sign(key, "s")); !ok || p != Digest || sub != "s" {
+		t.Fatalf("VerifyFor(digest) = %q, %q, %v", p, sub, ok)
+	}
+	if SignFor(key, Digest, "s") != Sign(key, "s") {
+		t.Fatal("a digest token changed shape")
+	}
+	// A digest signature under the welcome prefix is not a welcome token.
+	if _, _, ok := VerifyFor(key, "w."+Sign(key, "s")); ok {
+		t.Fatal("a digest signature passed as a welcome token")
+	}
+}

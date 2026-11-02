@@ -83,6 +83,8 @@ type Server struct {
 	profileWrites int
 	roomCounter   int
 	eventCounter  int
+	aliases       map[string]string // "#alias:server" -> room id
+	joins         []string
 }
 
 // New starts a fake homeserver named serverName and closes it with the test.
@@ -95,6 +97,7 @@ func New(t testing.TB, serverName string) *Server {
 		members:    map[string]map[string]string{},
 		refuse:     map[string]refusal{},
 		profiles:   map[string]string{},
+		aliases:    map[string]string{},
 	}
 	s.Server = httptest.NewServer(http.HandlerFunc(s.handle))
 	t.Cleanup(s.Server.Close)
@@ -301,6 +304,17 @@ func (s *Server) handle(w http.ResponseWriter, r *http.Request) {
 		s.send(w, r, seg[1], seg[4])
 	case r.Method == "GET" && len(seg) == 5 && seg[0] == "rooms" && seg[2] == "state":
 		s.state(w, seg[1], seg[3], seg[4])
+	case r.Method == "GET" && len(seg) == 3 && seg[0] == "directory" && seg[1] == "room":
+		s.mu.Lock()
+		room, ok := s.aliases[seg[2]]
+		s.mu.Unlock()
+		if !ok {
+			s.errorJSON(w, http.StatusNotFound, "M_NOT_FOUND", "Room alias not found")
+			return
+		}
+		s.writeJSON(w, map[string]any{"room_id": room, "servers": []string{s.serverName}})
+	case r.Method == "POST" && len(seg) == 2 && seg[0] == "join":
+		s.join(w, seg[1])
 	case r.Method == "POST" && path == "/_matrix/client/v3/createRoom":
 		s.createRoom(w, r)
 	case r.Method == "GET" && path == "/_matrix/client/v3/sync":
@@ -401,8 +415,46 @@ func (s *Server) createRoom(w http.ResponseWriter, r *http.Request) {
 	defer s.mu.Unlock()
 	s.roomCounter++
 	id := fmt.Sprintf("!room%d:%s", s.roomCounter, s.serverName)
+	if a, ok := req["room_alias_name"].(string); ok {
+		full := "#" + a + ":" + s.serverName
+		if _, taken := s.aliases[full]; taken {
+			s.errorJSON(w, http.StatusBadRequest, "M_ROOM_IN_USE", "Room alias already taken")
+			return
+		}
+		s.aliases[full] = id
+	}
 	s.rooms = append(s.rooms, &Room{ID: id, Request: req, Encrypted: s.encrypt})
 	s.writeJSON(w, map[string]any{"room_id": id})
+}
+
+// AddAlias publishes alias, "#localpart:server", for room, as a room someone
+// else made.
+func (s *Server) AddAlias(alias, room string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.aliases[alias] = room
+}
+
+// Joins is every room id or alias the bot asked to join, in order.
+func (s *Server) Joins() []string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]string(nil), s.joins...)
+}
+
+func (s *Server) join(w http.ResponseWriter, target string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.joins = append(s.joins, target)
+	room := target
+	if strings.HasPrefix(target, "#") {
+		var ok bool
+		if room, ok = s.aliases[target]; !ok {
+			s.errorJSON(w, http.StatusNotFound, "M_NOT_FOUND", "No known servers")
+			return
+		}
+	}
+	s.writeJSON(w, map[string]any{"room_id": room})
 }
 
 func (s *Server) leaveForget(w http.ResponseWriter, room, action string) {

@@ -454,3 +454,52 @@ func (c *Client) RegenerateSession(ctx context.Context, sessionID string) (strin
 	}
 	return "", statusErr("regenerate personal session", status)
 }
+
+// crockford is the ULID alphabet.
+const crockford = "0123456789ABCDEFGHJKMNPQRSTVWXYZ"
+
+// ULIDAt is the smallest ULID of the millisecond t: every user MAS creates
+// at t or later has a greater id, since a ULID starts with its time.
+func ULIDAt(t time.Time) string {
+	ms := uint64(max(t.UnixMilli(), 0))
+	var b [26]byte
+	for i := 9; i >= 0; i-- {
+		b[i] = crockford[ms&31]
+		ms >>= 5
+	}
+	for i := 10; i < 26; i++ {
+		b[i] = '0'
+	}
+	return string(b[:])
+}
+
+// UsersAfter returns up to n active users whose ids come after the id
+// after, in id order, which for ULIDs is the order MAS created them.
+//
+// Read from `crates/handlers/src/admin/v1/users/list.rs` at tag `v1.28.0`.
+func (c *Client) UsersAfter(ctx context.Context, after string, n int) ([]User, error) {
+	q := url.Values{"page[after]": {after}, "page[first]": {strconv.Itoa(n)}, "filter[status]": {"active"}}
+	status, b, err := c.do(ctx, http.MethodGet, "/api/admin/v1/users", q, nil)
+	if err != nil {
+		return nil, err
+	}
+	if status != http.StatusOK {
+		return nil, statusErr("user list", status)
+	}
+	var out struct {
+		Data []resource `json:"data"`
+	}
+	if json.Unmarshal(b, &out) != nil {
+		return nil, errors.New("MAS user list: unreadable answer")
+	}
+	users := make([]User, 0, len(out.Data))
+	for _, d := range out.Data {
+		one, _ := json.Marshal(map[string]any{"data": d})
+		u, err := parseUser(one)
+		if err != nil {
+			return nil, err
+		}
+		users = append(users, u)
+	}
+	return users, nil
+}

@@ -1,5 +1,5 @@
-// Package web is the service's only HTTP surface: the unsubscribe link in
-// the digest email, each sent digest's page and each preview's for the
+// Package web is the service's only HTTP surface: the unsubscribe links in
+// the digest and welcome emails, each sent digest's page and each preview's for the
 // signed-in member, and a health check for the container.
 package web
 
@@ -93,9 +93,19 @@ func (s *server) healthz(w http.ResponseWriter, r *http.Request) {
 
 func (s *server) unsubscribe(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
-	subject, ok := token.Verify(s.key, r.PathValue("token"))
+	purpose, subject, ok := token.VerifyFor(s.key, r.PathValue("token"))
 	if !ok {
 		s.invalid(w, r)
+		return
+	}
+	if purpose == token.Welcome {
+		if err := s.store.UnsubscribeWelcome(r.Context(), subject); err != nil {
+			slog.Error("welcome unsubscribe failed", "error", err)
+			w.WriteHeader(http.StatusInternalServerError)
+			w.Write([]byte("Something went wrong. Please try the link again."))
+			return
+		}
+		w.Write([]byte("You're unsubscribed from welcome emails."))
 		return
 	}
 	if err := s.store.Unsubscribe(r.Context(), subject, s.matrix); err != nil {
@@ -110,7 +120,7 @@ func (s *server) unsubscribe(w http.ResponseWriter, r *http.Request) {
 
 func (s *server) head(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
-	if _, ok := token.Verify(s.key, r.PathValue("token")); !ok {
+	if _, _, ok := token.VerifyFor(s.key, r.PathValue("token")); !ok {
 		w.WriteHeader(http.StatusNotFound)
 	}
 }

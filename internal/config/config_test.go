@@ -41,8 +41,9 @@ func TestLoadValid(t *testing.T) {
 		ListenAddr: "127.0.0.1:9000", PublicURL: "https://digest.example.org",
 		DatabaseURL: "postgres://own", MbinDatabaseURL: "postgres://mbin", MbinURL: "https://forum.example.org",
 		MetaTitle: "Example", SigningKey: make([]byte, 32),
-		SMTP:   SMTP{Host: "mail.example.org", Port: 465, User: "u", Password: "p", From: "digest@example.org", FromName: "Example", TLS: "tls"},
-		Matrix: Matrix{BotDisplayName: "Community Bot"},
+		SMTP:    SMTP{Host: "mail.example.org", Port: 465, User: "u", Password: "p", From: "digest@example.org", FromName: "Example", TLS: "tls"},
+		Matrix:  Matrix{BotDisplayName: "Community Bot"},
+		Welcome: Welcome{DailyLimit: 50},
 	}
 	if !reflect.DeepEqual(c, want) {
 		t.Fatalf("got %+v, want %+v", c, want)
@@ -258,6 +259,67 @@ func TestMatrixValidation(t *testing.T) {
 			if !strings.Contains(line, tc.name) {
 				t.Errorf("%s=%q: error about something else: %q", tc.name, tc.value, line)
 			}
+		}
+	}
+}
+
+func TestLoadWelcome(t *testing.T) {
+	c, err := Load(env(map[string]string{
+		"ENGAGEMENT_MBIN_API_URL":             "http://10.44.0.2:8080",
+		"ENGAGEMENT_MBIN_AGENT_CLIENT_ID":     "engagement-agent",
+		"ENGAGEMENT_MBIN_AGENT_CLIENT_SECRET": "secret",
+		"ENGAGEMENT_COMMUNITY_ROOM_NAME":      "Riverside Community",
+		"ENGAGEMENT_COMMUNITY_ROOM_ALIAS":     "riverside-community",
+		"ENGAGEMENT_WELCOME_DAILY_LIMIT":      "7",
+		"ENGAGEMENT_OPERATOR_EMAILS":          " a@example.org , b@example.org ,",
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := Welcome{
+		MbinAPIURL: "http://10.44.0.2:8080", AgentClientID: "engagement-agent", AgentClientSecret: "secret",
+		RoomName: "Riverside Community", RoomAlias: "riverside-community", DailyLimit: 7,
+		Operators: []string{"a@example.org", "b@example.org"},
+	}
+	if !reflect.DeepEqual(c.Welcome, want) {
+		t.Fatalf("got %+v, want %+v", c.Welcome, want)
+	}
+	if m := c.Welcome.MbinMissing(); len(m) != 0 {
+		t.Fatalf("MbinMissing = %v", m)
+	}
+	if m := c.Welcome.RoomMissing(); len(m) != 0 {
+		t.Fatalf("RoomMissing = %v", m)
+	}
+}
+
+func TestWelcomeMissing(t *testing.T) {
+	c, err := Load(env(nil))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := c.Welcome.MbinMissing(); !reflect.DeepEqual(got, []string{
+		"ENGAGEMENT_MBIN_API_URL", "ENGAGEMENT_MBIN_AGENT_CLIENT_ID", "ENGAGEMENT_MBIN_AGENT_CLIENT_SECRET"}) {
+		t.Fatalf("MbinMissing = %v", got)
+	}
+	if got := c.Welcome.RoomMissing(); !reflect.DeepEqual(got, []string{
+		"ENGAGEMENT_COMMUNITY_ROOM_NAME", "ENGAGEMENT_COMMUNITY_ROOM_ALIAS"}) {
+		t.Fatalf("RoomMissing = %v", got)
+	}
+}
+
+func TestLoadWelcomeRefused(t *testing.T) {
+	for name, over := range map[string]map[string]string{
+		"limit zero":     {"ENGAGEMENT_WELCOME_DAILY_LIMIT": "0"},
+		"limit word":     {"ENGAGEMENT_WELCOME_DAILY_LIMIT": "abc"},
+		"api slash":      {"ENGAGEMENT_MBIN_API_URL": "http://mbin:8080/"},
+		"api scheme":     {"ENGAGEMENT_MBIN_API_URL": "mbin:8080"},
+		"room two lines": {"ENGAGEMENT_COMMUNITY_ROOM_NAME": "a\nb"},
+		"alias upper":    {"ENGAGEMENT_COMMUNITY_ROOM_ALIAS": "Riverside"},
+		"alias colon":    {"ENGAGEMENT_COMMUNITY_ROOM_ALIAS": "a:b"},
+		"operator line":  {"ENGAGEMENT_OPERATOR_EMAILS": "a@x\r\nBcc: b@y"},
+	} {
+		if _, err := Load(env(over)); err == nil {
+			t.Errorf("%s: no error", name)
 		}
 	}
 }
